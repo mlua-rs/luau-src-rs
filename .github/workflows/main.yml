@@ -1,0 +1,89 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        target:
+        - x86_64-unknown-linux-gnu
+        - i686-unknown-linux-gnu
+        - aarch64-unknown-linux-gnu
+        - x86_64-apple-darwin
+        - x86_64-pc-windows-msvc
+        rust: [stable]
+        include:
+        - target: x86_64-unknown-linux-gnu
+          os: ubuntu-20.04
+        - target: i686-unknown-linux-gnu
+          os: ubuntu-20.04
+        - target: aarch64-unknown-linux-gnu
+          os: ubuntu-20.04
+        - target: x86_64-apple-darwin
+          os: macos-latest
+        - target: x86_64-pc-windows-msvc
+          os: windows-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        target: ${{ matrix.target }}
+        override: false
+    - name: Install GCC (i686-unknown-linux-gnu)
+      if: ${{ matrix.target == 'i686-unknown-linux-gnu' }}
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y --no-install-recommends gcc-multilib g++-multilib
+      shell: bash
+    - name: Install GCC (aarch64-unknown-linux-gnu)
+      if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+      shell: bash
+    - name: Build
+      run: |
+        cargo build --manifest-path testcrate/Cargo.toml --target ${{ matrix.target }} --release
+      shell: bash
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, macos-latest, windows-latest]
+        rust: [stable]
+        include:
+        - os: ubuntu-20.04
+          target: x86_64-unknown-linux-gnu
+        - os: macos-latest
+          target: x86_64-apple-darwin
+        - os: windows-latest
+          target: x86_64-pc-windows-msvc
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        target: ${{ matrix.target }}
+        override: true
+    - name: Run tests
+      run: |
+        cargo test --manifest-path testcrate/Cargo.toml --release
+      shell: bash
+
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        components: rustfmt
+        override: true
+    - run: cargo fmt -- --check
