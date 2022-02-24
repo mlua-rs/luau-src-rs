@@ -3,5 +3,5 @@ name = "testcrate"
 version = "0.1.0"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 
-[build-dependencies.luau-src]
+[build-dependencies.luau0-src]
 path = ".."

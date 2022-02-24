@@ -1,5 +1,5 @@
 [package]
-name = "luau-src"
+name = "luau0-src"
 version = "1.0.0+luau515"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 edition = "2018"
