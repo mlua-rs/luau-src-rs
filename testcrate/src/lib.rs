@@ -16,7 +16,7 @@ extern "C" {
 
     pub fn luaL_newstate() -> *mut c_void;
     pub fn luaL_openlibs(state: *mut c_void);
-    pub fn lua_getfield(state: *mut c_void, index: c_int, k: *const c_char);
+    pub fn lua_getfield(state: *mut c_void, index: c_int, k: *const c_char) -> c_int;
     pub fn lua_tolstring(state: *mut c_void, index: c_int, len: *mut c_long) -> *const c_char;
 
     pub fn luau_compile(
