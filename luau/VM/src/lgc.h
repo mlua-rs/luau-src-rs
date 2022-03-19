@@ -7,6 +7,13 @@
 #include "lstate.h"
 
 /*
+** Default settings for GC tunables (settable via lua_gc)
+*/
+#define LUAI_GCGOAL 200    /* 200% (allow heap to double compared to live heap size) */
+#define LUAI_GCSTEPMUL 200 /* GC runs 'twice the speed' of memory allocation */
+#define LUAI_GCSTEPSIZE 1  /* GC runs every KB of memory allocation */
+
+/*
 ** Possible states of the Garbage Collector
 */
 #define GCSpause 0
@@ -109,13 +116,6 @@
     { \
         if (isblack(obj2gco(p)) && iswhite(obj2gco(o))) \
             luaC_barrierf(L, obj2gco(p), obj2gco(o)); \
-    }
-
-// TODO: remove with FFlagLuauGcForwardMetatableBarrier
-#define luaC_objbarriert(L, t, o) \
-    { \
-        if (isblack(obj2gco(t)) && iswhite(obj2gco(o))) \
-            luaC_barriertable(L, t, obj2gco(o)); \
     }
 
 #define luaC_upvalbarrier(L, uv, tv) \

@@ -14,7 +14,7 @@
 
 #include <string.h>
 
-LUAU_FASTFLAGVARIABLE(LuauGcForwardMetatableBarrier, false)
+LUAU_FASTFLAG(LuauGcAdditionalStats)
 
 const char* lua_ident = "$Lua: Lua 5.1.4 Copyright (C) 1994-2008 Lua.org, PUC-Rio $\n"
                         "$Authors: R. Ierusalimschy, L. H. de Figueiredo & W. Celes $\n"
@@ -35,8 +35,8 @@ const char* luau_ident = "$Luau: Copyright (C) 2019-2022 Roblox Corporation $\n"
 
 static Table* getcurrenv(lua_State* L)
 {
-    if (L->ci == L->base_ci)  /* no enclosing function? */
-        return L->gt;         /* use global table as environment */
+    if (L->ci == L->base_ci) /* no enclosing function? */
+        return L->gt;        /* use global table as environment */
     else
         return curr_func(L)->env;
 }
@@ -876,16 +876,7 @@ int lua_setmetatable(lua_State* L, int objindex)
             luaG_runerror(L, "Attempt to modify a readonly table");
         hvalue(obj)->metatable = mt;
         if (mt)
-        {
-            if (FFlag::LuauGcForwardMetatableBarrier)
-            {
-                luaC_objbarrier(L, hvalue(obj), mt);
-            }
-            else
-            {
-                luaC_objbarriert(L, hvalue(obj), mt);
-            }
-        }
+            luaC_objbarrier(L, hvalue(obj), mt);
         break;
     }
     case LUA_TUSERDATA:
@@ -1069,6 +1060,8 @@ int lua_gc(lua_State* L, int what, int data)
             g->GCthreshold = 0;
 
         bool waspaused = g->gcstate == GCSpause;
+        double startmarktime = g->gcstats.currcycle.marktime;
+        double startsweeptime = g->gcstats.currcycle.sweeptime;
 
         // track how much work the loop will actually perform
         size_t actualwork = 0;
@@ -1083,6 +1076,31 @@ int lua_gc(lua_State* L, int what, int data)
             {            /* end of cycle? */
                 res = 1; /* signal it */
                 break;
+            }
+        }
+
+        if (FFlag::LuauGcAdditionalStats)
+        {
+            // record explicit step statistics
+            GCCycleStats* cyclestats = g->gcstate == GCSpause ? &g->gcstats.lastcycle : &g->gcstats.currcycle;
+
+            double totalmarktime = cyclestats->marktime - startmarktime;
+            double totalsweeptime = cyclestats->sweeptime - startsweeptime;
+
+            if (totalmarktime > 0.0)
+            {
+                cyclestats->markexplicitsteps++;
+
+                if (totalmarktime > cyclestats->markmaxexplicittime)
+                    cyclestats->markmaxexplicittime = totalmarktime;
+            }
+
+            if (totalsweeptime > 0.0)
+            {
+                cyclestats->sweepexplicitsteps++;
+
+                if (totalsweeptime > cyclestats->sweepmaxexplicittime)
+                    cyclestats->sweepmaxexplicittime = totalsweeptime;
             }
         }
 
@@ -1170,7 +1188,7 @@ void lua_concat(lua_State* L, int n)
 
 void* lua_newuserdatatagged(lua_State* L, size_t sz, int tag)
 {
-    api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
+    api_check(L, unsigned(tag) < LUA_UTAG_LIMIT || tag == UTAG_PROXY);
     luaC_checkGC(L);
     luaC_checkthreadsleep(L);
     Udata* u = luaU_newudata(L, sz, tag);
@@ -1299,7 +1317,31 @@ void lua_setuserdatadtor(lua_State* L, int tag, void (*dtor)(void*))
     L->global->udatagc[tag] = dtor;
 }
 
+void lua_clonefunction(lua_State* L, int idx)
+{
+    StkId p = index2addr(L, idx);
+    api_check(L, isLfunction(p));
+
+    luaC_checkthreadsleep(L);
+
+    Closure* cl = clvalue(p);
+    Closure* newcl = luaF_newLclosure(L, 0, L->gt, cl->l.p);
+    setclvalue(L, L->top - 1, newcl);
+}
+
 lua_Callbacks* lua_callbacks(lua_State* L)
 {
     return &L->global->cb;
+}
+
+void lua_setmemcat(lua_State* L, int category)
+{
+    api_check(L, unsigned(category) < LUA_MEMORY_CATEGORIES);
+    L->activememcat = uint8_t(category);
+}
+
+size_t lua_totalbytes(lua_State* L, int category)
+{
+    api_check(L, category < LUA_MEMORY_CATEGORIES);
+    return category < 0 ? L->global->totalbytes : L->global->memcatbytes[category];
 }
