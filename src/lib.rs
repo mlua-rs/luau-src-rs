@@ -111,7 +111,6 @@ impl Build {
             .clone()
             .include(&vm_include_dir)
             .define("LUA_API", "extern \"C\"")
-            // Works 9 times slower, see https://github.com/Roblox/luau/issues/425
             // .define("LUA_USE_LONGJMP", "1")
             .add_files_by_ext(&vm_source_dir, "cpp")
             .out_dir(&lib_dir)
