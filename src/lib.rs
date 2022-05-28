@@ -48,6 +48,7 @@ impl Build {
         let include_dir = out_dir.join("include");
 
         let source_dir_base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let common_include_dir = source_dir_base.join("luau").join("Common").join("include");
         let ast_source_dir = source_dir_base.join("luau").join("Ast").join("src");
         let ast_include_dir = source_dir_base.join("luau").join("Ast").join("include");
         let compiler_source_dir = source_dir_base.join("luau").join("Compiler").join("src");
@@ -90,6 +91,7 @@ impl Build {
         config
             .clone()
             .include(&ast_include_dir)
+            .include(&common_include_dir)
             .add_files_by_ext(&ast_source_dir, "cpp")
             .out_dir(&lib_dir)
             .compile(ast_lib_name);
@@ -100,6 +102,7 @@ impl Build {
             .clone()
             .include(&compiler_include_dir)
             .include(&ast_include_dir)
+            .include(&common_include_dir)
             .define("LUACODE_API", "extern \"C\"")
             .add_files_by_ext(&compiler_source_dir, "cpp")
             .out_dir(&lib_dir)
@@ -110,6 +113,7 @@ impl Build {
         config
             .clone()
             .include(&vm_include_dir)
+            .include(&common_include_dir)
             .define("LUA_API", "extern \"C\"")
             // .define("LUA_USE_LONGJMP", "1")
             .add_files_by_ext(&vm_source_dir, "cpp")
