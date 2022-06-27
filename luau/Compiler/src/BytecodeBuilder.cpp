@@ -9,6 +9,9 @@
 namespace Luau
 {
 
+static_assert(LBC_VERSION_TARGET >= LBC_VERSION_MIN && LBC_VERSION_TARGET <= LBC_VERSION_MAX, "Invalid bytecode version setup");
+static_assert(LBC_VERSION_MAX <= 127, "Bytecode version should be 7-bit so that we can extend the serialization to use varint transparently");
+
 static const uint32_t kMaxConstantCount = 1 << 23;
 static const uint32_t kMaxClosureCount = 1 << 15;
 
@@ -572,7 +575,10 @@ void BytecodeBuilder::finalize()
     bytecode.reserve(capacity);
 
     // assemble final bytecode blob
-    bytecode = char(LBC_VERSION);
+    uint8_t version = getVersion();
+    LUAU_ASSERT(version >= LBC_VERSION_MIN && version <= LBC_VERSION_MAX);
+
+    bytecode = char(version);
 
     writeStringTable(bytecode);
 
@@ -1040,12 +1046,18 @@ void BytecodeBuilder::expandJumps()
 
 std::string BytecodeBuilder::getError(const std::string& message)
 {
-    // 0 acts as a special marker for error bytecode (it's equal to LBC_VERSION for valid bytecode blobs)
+    // 0 acts as a special marker for error bytecode (it's equal to LBC_VERSION_TARGET for valid bytecode blobs)
     std::string result;
     result += char(0);
     result += message;
 
     return result;
+}
+
+uint8_t BytecodeBuilder::getVersion()
+{
+    // This function usually returns LBC_VERSION_TARGET but may sometimes return a higher number (within LBC_VERSION_MIN/MAX) under fast flags
+    return LBC_VERSION_TARGET;
 }
 
 #ifdef LUAU_ASSERTENABLED
@@ -1074,6 +1086,8 @@ void BytecodeBuilder::validate() const
         i += getOpLength(LuauOpcode(op));
         LUAU_ASSERT(i <= insns.size());
     }
+
+    std::vector<uint8_t> openCaptures;
 
     // second pass: validate the rest of the bytecode
     for (size_t i = 0; i < insns.size();)
@@ -1121,6 +1135,8 @@ void BytecodeBuilder::validate() const
 
         case LOP_CLOSEUPVALS:
             VREG(LUAU_INSN_A(insn));
+            while (openCaptures.size() && openCaptures.back() >= LUAU_INSN_A(insn))
+                openCaptures.pop_back();
             break;
 
         case LOP_GETIMPORT:
@@ -1388,8 +1404,12 @@ void BytecodeBuilder::validate() const
             switch (LUAU_INSN_A(insn))
             {
             case LCT_VAL:
+                VREG(LUAU_INSN_B(insn));
+                break;
+
             case LCT_REF:
                 VREG(LUAU_INSN_B(insn));
+                openCaptures.push_back(LUAU_INSN_B(insn));
                 break;
 
             case LCT_UPVAL:
@@ -1408,6 +1428,12 @@ void BytecodeBuilder::validate() const
         i += getOpLength(LuauOpcode(op));
         LUAU_ASSERT(i <= insns.size());
     }
+
+    // all CAPTURE REF instructions must have a CLOSEUPVALS instruction after them in the bytecode stream
+    // this doesn't guarantee safety as it doesn't perform basic block based analysis, but if this fails
+    // then the bytecode is definitely unsafe to run since the compiler won't generate backwards branches
+    // except for loop edges
+    LUAU_ASSERT(openCaptures.empty());
 
 #undef VREG
 #undef VREGEND
