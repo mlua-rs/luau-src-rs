@@ -16,6 +16,8 @@
 
 #include <string.h>
 
+LUAU_FASTFLAGVARIABLE(LuauLenTM, false)
+
 // Disable c99-designator to avoid the warning in CGOTO dispatch table
 #ifdef __clang__
 #if __has_warning("-Wc99-designator")
@@ -638,20 +640,16 @@ static void luau_execute(lua_State* L)
                             VM_PATCH_C(pc - 2, L->cachedslot);
                             VM_NEXT();
                         }
-                        else
-                        {
-                            // slow-path, may invoke Lua calls via __index metamethod
-                            VM_PROTECT(luaV_gettable(L, rb, kv, ra));
-                            VM_NEXT();
-                        }
+
+                        // fall through to slow path
                     }
-                    else
-                    {
-                        // slow-path, may invoke Lua calls via __index metamethod
-                        VM_PROTECT(luaV_gettable(L, rb, kv, ra));
-                        VM_NEXT();
-                    }
+
+                    // fall through to slow path
                 }
+
+                // slow-path, may invoke Lua calls via __index metamethod
+                VM_PROTECT(luaV_gettable(L, rb, kv, ra));
+                VM_NEXT();
             }
 
             VM_CASE(LOP_SETTABLEKS)
@@ -751,19 +749,13 @@ static void luau_execute(lua_State* L)
                         setobj2s(L, ra, &h->array[unsigned(index - 1)]);
                         VM_NEXT();
                     }
-                    else
-                    {
-                        // slow-path: handles out of bounds array lookups and non-integer numeric keys
-                        VM_PROTECT(luaV_gettable(L, rb, rc, ra));
-                        VM_NEXT();
-                    }
+
+                    // fall through to slow path
                 }
-                else
-                {
-                    // slow-path: handles non-array table lookup as well as __index MT calls
-                    VM_PROTECT(luaV_gettable(L, rb, rc, ra));
-                    VM_NEXT();
-                }
+
+                // slow-path: handles out of bounds array lookups, non-integer numeric keys, non-array table lookup, __index MT calls
+                VM_PROTECT(luaV_gettable(L, rb, rc, ra));
+                VM_NEXT();
             }
 
             VM_CASE(LOP_SETTABLE)
@@ -788,19 +780,13 @@ static void luau_execute(lua_State* L)
                         luaC_barriert(L, h, ra);
                         VM_NEXT();
                     }
-                    else
-                    {
-                        // slow-path: handles out of bounds array assignments and non-integer numeric keys
-                        VM_PROTECT(luaV_settable(L, rb, rc, ra));
-                        VM_NEXT();
-                    }
+
+                    // fall through to slow path
                 }
-                else
-                {
-                    // slow-path: handles non-array table access as well as __newindex MT calls
-                    VM_PROTECT(luaV_settable(L, rb, rc, ra));
-                    VM_NEXT();
-                }
+
+                // slow-path: handles out of bounds array assignments, non-integer numeric keys, non-array table access, __newindex MT calls
+                VM_PROTECT(luaV_settable(L, rb, rc, ra));
+                VM_NEXT();
             }
 
             VM_CASE(LOP_GETTABLEN)
@@ -820,6 +806,8 @@ static void luau_execute(lua_State* L)
                         setobj2s(L, ra, &h->array[c]);
                         VM_NEXT();
                     }
+
+                    // fall through to slow path
                 }
 
                 // slow-path: handles out of bounds array lookups
@@ -847,6 +835,8 @@ static void luau_execute(lua_State* L)
                         luaC_barriert(L, h, ra);
                         VM_NEXT();
                     }
+
+                    // fall through to slow path
                 }
 
                 // slow-path: handles out of bounds array lookups
@@ -2082,13 +2072,25 @@ static void luau_execute(lua_State* L)
                 // fast-path #1: tables
                 if (ttistable(rb))
                 {
-                    setnvalue(ra, cast_num(luaH_getn(hvalue(rb))));
-                    VM_NEXT();
+                    Table* h = hvalue(rb);
+
+                    if (!FFlag::LuauLenTM || fastnotm(h->metatable, TM_LEN))
+                    {
+                        setnvalue(ra, cast_num(luaH_getn(h)));
+                        VM_NEXT();
+                    }
+                    else
+                    {
+                        // slow-path, may invoke C/Lua via metamethods
+                        VM_PROTECT(luaV_dolen(L, ra, rb));
+                        VM_NEXT();
+                    }
                 }
                 // fast-path #2: strings (not very important but easy to do)
                 else if (ttisstring(rb))
                 {
-                    setnvalue(ra, cast_num(tsvalue(rb)->len));
+                    TString* ts = tsvalue(rb);
+                    setnvalue(ra, cast_num(ts->len));
                     VM_NEXT();
                 }
                 else
@@ -2162,8 +2164,10 @@ static void luau_execute(lua_State* L)
                 if (!ttisnumber(ra + 0) || !ttisnumber(ra + 1) || !ttisnumber(ra + 2))
                 {
                     // slow-path: can convert arguments to numbers and trigger Lua errors
-                    // Note: this doesn't reallocate stack so we don't need to recompute ra
-                    VM_PROTECT(luau_prepareFORN(L, ra + 0, ra + 1, ra + 2));
+                    // Note: this doesn't reallocate stack so we don't need to recompute ra/base
+                    VM_PROTECT_PC();
+
+                    luau_prepareFORN(L, ra + 0, ra + 1, ra + 2);
                 }
 
                 double limit = nvalue(ra + 0);
@@ -2226,6 +2230,15 @@ static void luau_execute(lua_State* L)
 
                         VM_PROTECT(luaD_call(L, ra, 3));
                         L->top = L->ci->top;
+
+                        /* recompute ra since stack might have been reallocated */
+                        ra = VM_REG(LUAU_INSN_A(insn));
+
+                        /* protect against __iter returning nil, since nil is used as a marker for builtin iteration in FORGLOOP */
+                        if (ttisnil(ra))
+                        {
+                            VM_PROTECT(luaG_typeerror(L, ra, "call"));
+                        }
                     }
                     else if (fasttm(L, mt, TM_CALL))
                     {
@@ -2258,27 +2271,38 @@ static void luau_execute(lua_State* L)
                 uint32_t aux = *pc;
 
                 // fast-path: builtin table iteration
-                if (ttisnil(ra) && ttistable(ra + 1) && ttislightuserdata(ra + 2))
+                // note: ra=nil guarantees ra+1=table and ra+2=userdata because of the setup by FORGPREP* opcodes
+                // TODO: remove the table check per guarantee above
+                if (ttisnil(ra) && ttistable(ra + 1))
                 {
                     Table* h = hvalue(ra + 1);
                     int index = int(reinterpret_cast<uintptr_t>(pvalue(ra + 2)));
 
                     int sizearray = h->sizearray;
-                    int sizenode = 1 << h->lsizenode;
 
                     // clear extra variables since we might have more than two
-                    if (LUAU_UNLIKELY(aux > 2))
+                    // note: while aux encodes ipairs bit, when set we always use 2 variables, so it's safe to check this via a signed comparison
+                    if (LUAU_UNLIKELY(int(aux) > 2))
                         for (int i = 2; i < int(aux); ++i)
                             setnilvalue(ra + 3 + i);
+
+                    // terminate ipairs-style traversal early when encountering nil
+                    if (int(aux) < 0 && (unsigned(index) >= unsigned(sizearray) || ttisnil(&h->array[index])))
+                    {
+                        pc++;
+                        VM_NEXT();
+                    }
 
                     // first we advance index through the array portion
                     while (unsigned(index) < unsigned(sizearray))
                     {
-                        if (!ttisnil(&h->array[index]))
+                        TValue* e = &h->array[index];
+
+                        if (!ttisnil(e))
                         {
                             setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(index + 1)));
                             setnvalue(ra + 3, double(index + 1));
-                            setobj2s(L, ra + 4, &h->array[index]);
+                            setobj2s(L, ra + 4, e);
 
                             pc += LUAU_INSN_D(insn);
                             LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
@@ -2287,6 +2311,8 @@ static void luau_execute(lua_State* L)
 
                         index++;
                     }
+
+                    int sizenode = 1 << h->lsizenode;
 
                     // then we advance index through the hash portion
                     while (unsigned(index - sizearray) < unsigned(sizenode))
@@ -2321,7 +2347,7 @@ static void luau_execute(lua_State* L)
                     L->top = ra + 3 + 3; /* func + 2 args (state and index) */
                     LUAU_ASSERT(L->top <= L->stack_last);
 
-                    VM_PROTECT(luaD_call(L, ra + 3, aux));
+                    VM_PROTECT(luaD_call(L, ra + 3, uint8_t(aux)));
                     L->top = L->ci->top;
 
                     // recompute ra since stack might have been reallocated
