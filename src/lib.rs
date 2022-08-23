@@ -76,7 +76,6 @@ impl Build {
             .target(target)
             .host(host)
             .warnings(false)
-            .opt_level(2)
             .cargo_metadata(false)
             .flag_if_supported("-std=c++17")
             .flag_if_supported("/std:c++17") // MSVC
@@ -84,6 +83,7 @@ impl Build {
 
         if cfg!(not(debug_assertions)) {
             config.define("NDEBUG", None);
+            config.opt_level(2);
         }
 
         // Build Ast
