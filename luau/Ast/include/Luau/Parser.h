@@ -11,6 +11,7 @@
 
 #include <initializer_list>
 #include <optional>
+#include <tuple>
 
 namespace Luau
 {
@@ -109,8 +110,10 @@ private:
     // for namelist in explist do block end |
     AstStat* parseFor();
 
-    // function funcname funcbody |
     // funcname ::= Name {`.' Name} [`:' Name]
+    AstExpr* parseFunctionName(Location start, bool& hasself, AstName& debugname);
+
+    // function funcname funcbody
     AstStat* parseFunctionStat();
 
     // local function Name funcbody |
@@ -135,8 +138,10 @@ private:
     // var [`+=' | `-=' | `*=' | `/=' | `%=' | `^=' | `..='] exp
     AstStat* parseCompoundAssignment(AstExpr* initial, AstExprBinary::Op op);
 
-    // funcbody ::= `(' [parlist] `)' block end
-    // parlist ::= namelist [`,' `...'] | `...'
+    std::pair<AstLocal*, AstArray<AstLocal*>> prepareFunctionArguments(const Location& start, bool hasself, const TempVector<Binding>& args);
+
+    // funcbodyhead ::= `(' [namelist [`,' `...'] | `...'] `)' [`:` TypeAnnotation]
+    // funcbody ::= funcbodyhead block end
     std::pair<AstExprFunction*, AstLocal*> parseFunctionBody(
         bool hasself, const Lexeme& matchFunction, const AstName& debugname, const Name* localName);
 
@@ -148,7 +153,7 @@ private:
 
     // bindinglist ::= (binding | `...') {`,' bindinglist}
     // Returns the location of the vararg ..., or std::nullopt if the function is not vararg.
-    std::pair<std::optional<Location>, AstTypePack*> parseBindingList(TempVector<Binding>& result, bool allowDot3 = false);
+    std::tuple<bool, Location, AstTypePack*> parseBindingList(TempVector<Binding>& result, bool allowDot3 = false);
 
     AstType* parseOptionalTypeAnnotation();
 
@@ -228,6 +233,9 @@ private:
     // TODO: Add grammar rules here?
     AstExpr* parseIfElseExpr();
 
+    // stringinterp ::= <INTERP_BEGIN> exp {<INTERP_MID> exp} <INTERP_END>
+    AstExpr* parseInterpString();
+
     // Name
     std::optional<Name> parseNameOpt(const char* context = nullptr);
     Name parseName(const char* context = nullptr);
@@ -296,6 +304,12 @@ private:
     AstExprError* reportExprError(const Location& location, const AstArray<AstExpr*>& expressions, const char* format, ...) LUAU_PRINTF_ATTR(4, 5);
     AstTypeError* reportTypeAnnotationError(const Location& location, const AstArray<AstType*>& types, bool isMissing, const char* format, ...)
         LUAU_PRINTF_ATTR(5, 6);
+    // `parseErrorLocation` is associated with the parser error
+    // `astErrorLocation` is associated with the AstTypeError created
+    // It can be useful to have different error locations so that the parse error can include the next lexeme, while the AstTypeError can precisely
+    // define the location (possibly of zero size) where a type annotation is expected.
+    AstTypeError* reportMissingTypeAnnotationError(const Location& parseErrorLocation, const Location& astErrorLocation, const char* format, ...)
+        LUAU_PRINTF_ATTR(4, 5);
 
     AstExpr* reportFunctionArgsError(AstExpr* func, bool self);
     void reportAmbiguousCallError();
@@ -379,6 +393,7 @@ private:
     std::vector<unsigned int> matchRecoveryStopOnToken;
 
     std::vector<AstStat*> scratchStat;
+    std::vector<AstArray<char>> scratchString;
     std::vector<AstExpr*> scratchExpr;
     std::vector<AstExpr*> scratchExprAux;
     std::vector<AstName> scratchName;

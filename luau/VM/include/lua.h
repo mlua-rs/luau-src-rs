@@ -35,6 +35,15 @@ enum lua_Status
     LUA_BREAK, // yielded for a debug breakpoint
 };
 
+enum lua_CoStatus
+{
+    LUA_CORUN = 0, // running
+    LUA_COSUS, // suspended
+    LUA_CONOR, // 'normal' (it resumed another coroutine)
+    LUA_COFIN, // finished
+    LUA_COERR, // finished with error
+};
+
 typedef struct lua_State lua_State;
 
 typedef int (*lua_CFunction)(lua_State* L);
@@ -201,6 +210,7 @@ LUA_API void lua_getfenv(lua_State* L, int idx);
 */
 LUA_API void lua_settable(lua_State* L, int idx);
 LUA_API void lua_setfield(lua_State* L, int idx, const char* k);
+LUA_API void lua_rawsetfield(lua_State* L, int idx, const char* k);
 LUA_API void lua_rawset(lua_State* L, int idx);
 LUA_API void lua_rawseti(lua_State* L, int idx, int n);
 LUA_API int lua_setmetatable(lua_State* L, int objindex);
@@ -224,6 +234,7 @@ LUA_API int lua_status(lua_State* L);
 LUA_API int lua_isyieldable(lua_State* L);
 LUA_API void* lua_getthreaddata(lua_State* L);
 LUA_API void lua_setthreaddata(lua_State* L, void* data);
+LUA_API int lua_costatus(lua_State* L, lua_State* co);
 
 /*
 ** garbage-collection function and options
