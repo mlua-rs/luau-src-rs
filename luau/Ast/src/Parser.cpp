@@ -20,11 +20,12 @@ LUAU_DYNAMIC_FASTFLAGVARIABLE(LuaReportParseWrongNamedType, false)
 bool lua_telemetry_parsed_named_non_function_type = false;
 
 LUAU_FASTFLAGVARIABLE(LuauErrorDoubleHexPrefix, false)
-LUAU_FASTFLAGVARIABLE(LuauLintParseIntegerIssues, false)
 LUAU_DYNAMIC_FASTFLAGVARIABLE(LuaReportParseIntegerIssues, false)
 
 LUAU_FASTFLAGVARIABLE(LuauInterpolatedStringBaseSupport, false)
 LUAU_FASTFLAGVARIABLE(LuauTypeAnnotationLocationChange, false)
+
+LUAU_FASTFLAGVARIABLE(LuauCommaParenWarnings, false)
 
 bool lua_telemetry_parsed_out_of_range_bin_integer = false;
 bool lua_telemetry_parsed_out_of_range_hex_integer = false;
@@ -1063,6 +1064,12 @@ void Parser::parseExprList(TempVector<AstExpr*>& result)
     {
         nextLexeme();
 
+        if (FFlag::LuauCommaParenWarnings && lexer.current().type == ')')
+        {
+            report(lexer.current().location, "Expected expression after ',' but got ')' instead");
+            break;
+        }
+
         result.push_back(parseExpr());
     }
 }
@@ -1149,7 +1156,14 @@ AstTypePack* Parser::parseTypeList(TempVector<AstType*>& result, TempVector<std:
         result.push_back(parseTypeAnnotation());
         if (lexer.current().type != ',')
             break;
+
         nextLexeme();
+
+        if (FFlag::LuauCommaParenWarnings && lexer.current().type == ')')
+        {
+            report(lexer.current().location, "Expected type after ',' but got ')' instead");
+            break;
+        }
     }
 
     return nullptr;
@@ -2070,95 +2084,8 @@ AstExpr* Parser::parseAssertionExpr()
         return expr;
 }
 
-static const char* parseInteger_DEPRECATED(double& result, const char* data, int base)
-{
-    LUAU_ASSERT(!FFlag::LuauLintParseIntegerIssues);
-
-    char* end = nullptr;
-    unsigned long long value = strtoull(data, &end, base);
-
-    if (value == ULLONG_MAX && errno == ERANGE)
-    {
-        // 'errno' might have been set before we called 'strtoull', but we don't want the overhead of resetting a TLS variable on each call
-        // so we only reset it when we get a result that might be an out-of-range error and parse again to make sure
-        errno = 0;
-        value = strtoull(data, &end, base);
-
-        if (errno == ERANGE)
-        {
-            if (DFFlag::LuaReportParseIntegerIssues)
-            {
-                if (base == 2)
-                    lua_telemetry_parsed_out_of_range_bin_integer = true;
-                else
-                    lua_telemetry_parsed_out_of_range_hex_integer = true;
-            }
-        }
-    }
-
-    result = double(value);
-    return *end == 0 ? nullptr : "Malformed number";
-}
-
-static const char* parseNumber_DEPRECATED2(double& result, const char* data)
-{
-    LUAU_ASSERT(!FFlag::LuauLintParseIntegerIssues);
-
-    // binary literal
-    if (data[0] == '0' && (data[1] == 'b' || data[1] == 'B') && data[2])
-        return parseInteger_DEPRECATED(result, data + 2, 2);
-
-    // hexadecimal literal
-    if (data[0] == '0' && (data[1] == 'x' || data[1] == 'X') && data[2])
-    {
-        if (DFFlag::LuaReportParseIntegerIssues && data[2] == '0' && (data[3] == 'x' || data[3] == 'X'))
-            lua_telemetry_parsed_double_prefix_hex_integer = true;
-
-        return parseInteger_DEPRECATED(result, data + 2, 16);
-    }
-
-    char* end = nullptr;
-    double value = strtod(data, &end);
-
-    result = value;
-    return *end == 0 ? nullptr : "Malformed number";
-}
-
-static bool parseNumber_DEPRECATED(double& result, const char* data)
-{
-    LUAU_ASSERT(!FFlag::LuauLintParseIntegerIssues);
-
-    // binary literal
-    if (data[0] == '0' && (data[1] == 'b' || data[1] == 'B') && data[2])
-    {
-        char* end = nullptr;
-        unsigned long long value = strtoull(data + 2, &end, 2);
-
-        result = double(value);
-        return *end == 0;
-    }
-    // hexadecimal literal
-    else if (data[0] == '0' && (data[1] == 'x' || data[1] == 'X') && data[2])
-    {
-        char* end = nullptr;
-        unsigned long long value = strtoull(data + 2, &end, 16);
-
-        result = double(value);
-        return *end == 0;
-    }
-    else
-    {
-        char* end = nullptr;
-        double value = strtod(data, &end);
-
-        result = value;
-        return *end == 0;
-    }
-}
-
 static ConstantNumberParseResult parseInteger(double& result, const char* data, int base)
 {
-    LUAU_ASSERT(FFlag::LuauLintParseIntegerIssues);
     LUAU_ASSERT(base == 2 || base == 16);
 
     char* end = nullptr;
@@ -2195,8 +2122,6 @@ static ConstantNumberParseResult parseInteger(double& result, const char* data, 
 
 static ConstantNumberParseResult parseDouble(double& result, const char* data)
 {
-    LUAU_ASSERT(FFlag::LuauLintParseIntegerIssues);
-
     // binary literal
     if (data[0] == '0' && (data[1] == 'b' || data[1] == 'B') && data[2])
         return parseInteger(result, data + 2, 2);
@@ -2604,7 +2529,15 @@ std::pair<AstArray<AstGenericType>, AstArray<AstGenericTypePack>> Parser::parseG
             }
 
             if (lexer.current().type == ',')
+            {
                 nextLexeme();
+
+                if (FFlag::LuauCommaParenWarnings && lexer.current().type == '>')
+                {
+                    report(lexer.current().location, "Expected type after ',' but got '>' instead");
+                    break;
+                }
+            }
             else
                 break;
         }
@@ -2771,49 +2704,14 @@ AstExpr* Parser::parseNumber()
         scratchData.erase(std::remove(scratchData.begin(), scratchData.end(), '_'), scratchData.end());
     }
 
-    if (FFlag::LuauLintParseIntegerIssues)
-    {
-        double value = 0;
-        ConstantNumberParseResult result = parseDouble(value, scratchData.c_str());
-        nextLexeme();
+    double value = 0;
+    ConstantNumberParseResult result = parseDouble(value, scratchData.c_str());
+    nextLexeme();
 
-        if (result == ConstantNumberParseResult::Malformed)
-            return reportExprError(start, {}, "Malformed number");
+    if (result == ConstantNumberParseResult::Malformed)
+        return reportExprError(start, {}, "Malformed number");
 
-        return allocator.alloc<AstExprConstantNumber>(start, value, result);
-    }
-    else if (DFFlag::LuaReportParseIntegerIssues)
-    {
-        double value = 0;
-        if (const char* error = parseNumber_DEPRECATED2(value, scratchData.c_str()))
-        {
-            nextLexeme();
-
-            return reportExprError(start, {}, "%s", error);
-        }
-        else
-        {
-            nextLexeme();
-
-            return allocator.alloc<AstExprConstantNumber>(start, value);
-        }
-    }
-    else
-    {
-        double value = 0;
-        if (parseNumber_DEPRECATED(value, scratchData.c_str()))
-        {
-            nextLexeme();
-
-            return allocator.alloc<AstExprConstantNumber>(start, value);
-        }
-        else
-        {
-            nextLexeme();
-
-            return reportExprError(start, {}, "Malformed number");
-        }
-    }
+    return allocator.alloc<AstExprConstantNumber>(start, value, result);
 }
 
 AstLocal* Parser::pushLocal(const Binding& binding)

@@ -13,8 +13,6 @@
 
 #include <string.h>
 
-LUAU_FASTFLAGVARIABLE(LuauBetterThreadMark, false)
-
 /*
  * Luau uses an incremental non-generational non-moving mark&sweep garbage collector.
  *
@@ -117,8 +115,6 @@ LUAU_FASTFLAGVARIABLE(LuauBetterThreadMark, false)
  * during atomic phase. This is needed because an open upvalue might point to a stack location in a dead thread that never marked the stack
  * slot - upvalues like this are identified since they don't have `markedopen` bit set during thread traversal and closed in `clearupvals`.
  */
-
-LUAU_FASTFLAGVARIABLE(LuauFasterSweep, false)
 
 #define GC_SWEEPPAGESTEPCOST 16
 
@@ -475,54 +471,25 @@ static size_t propagatemark(global_State* g)
 
         bool active = th->isactive || th == th->global->mainthread;
 
-        if (FFlag::LuauBetterThreadMark)
+        traversestack(g, th);
+
+        // active threads will need to be rescanned later to mark new stack writes so we mark them gray again
+        if (active)
         {
-            traversestack(g, th);
+            th->gclist = g->grayagain;
+            g->grayagain = o;
 
-            // active threads will need to be rescanned later to mark new stack writes so we mark them gray again
-            if (active)
-            {
-                th->gclist = g->grayagain;
-                g->grayagain = o;
-
-                black2gray(o);
-            }
-
-            // the stack needs to be cleared after the last modification of the thread state before sweep begins
-            // if the thread is inactive, we might not see the thread in this cycle so we must clear it now
-            if (!active || g->gcstate == GCSatomic)
-                clearstack(th);
-
-            // we could shrink stack at any time but we opt to do it during initial mark to do that just once per cycle
-            if (g->gcstate == GCSpropagate)
-                shrinkstack(th);
+            black2gray(o);
         }
-        else
-        {
-            // TODO: Refactor this logic!
-            if (!active && g->gcstate == GCSpropagate)
-            {
-                traversestack(g, th);
-                clearstack(th);
-            }
-            else
-            {
-                th->gclist = g->grayagain;
-                g->grayagain = o;
 
-                black2gray(o);
+        // the stack needs to be cleared after the last modification of the thread state before sweep begins
+        // if the thread is inactive, we might not see the thread in this cycle so we must clear it now
+        if (!active || g->gcstate == GCSatomic)
+            clearstack(th);
 
-                traversestack(g, th);
-
-                // final traversal?
-                if (g->gcstate == GCSatomic)
-                    clearstack(th);
-            }
-
-            // we could shrink stack at any time but we opt to skip it during atomic since it's redundant to do that more than once per cycle
-            if (g->gcstate != GCSatomic)
-                shrinkstack(th);
-        }
+        // we could shrink stack at any time but we opt to do it during initial mark to do that just once per cycle
+        if (g->gcstate == GCSpropagate)
+            shrinkstack(th);
 
         return sizeof(lua_State) + sizeof(TValue) * th->stacksize + sizeof(CallInfo) * th->size_ci;
     }
@@ -836,28 +803,6 @@ static size_t atomic(lua_State* L)
     return work;
 }
 
-static bool sweepgco(lua_State* L, lua_Page* page, GCObject* gco)
-{
-    LUAU_ASSERT(!FFlag::LuauFasterSweep);
-    global_State* g = L->global;
-
-    int deadmask = otherwhite(g);
-    LUAU_ASSERT(testbit(deadmask, FIXEDBIT)); // make sure we never sweep fixed objects
-
-    int alive = (gco->gch.marked ^ WHITEBITS) & deadmask;
-
-    if (alive)
-    {
-        LUAU_ASSERT(!isdead(g, gco));
-        makewhite(g, gco); // make it white (for next cycle)
-        return false;
-    }
-
-    LUAU_ASSERT(isdead(g, gco));
-    freeobj(L, gco, page);
-    return true;
-}
-
 // a version of generic luaM_visitpage specialized for the main sweep stage
 static int sweepgcopage(lua_State* L, lua_Page* page)
 {
@@ -869,58 +814,36 @@ static int sweepgcopage(lua_State* L, lua_Page* page)
 
     LUAU_ASSERT(busyBlocks > 0);
 
-    if (FFlag::LuauFasterSweep)
+    global_State* g = L->global;
+
+    int deadmask = otherwhite(g);
+    LUAU_ASSERT(testbit(deadmask, FIXEDBIT)); // make sure we never sweep fixed objects
+
+    int newwhite = luaC_white(g);
+
+    for (char* pos = start; pos != end; pos += blockSize)
     {
-        global_State* g = L->global;
+        GCObject* gco = (GCObject*)pos;
 
-        int deadmask = otherwhite(g);
-        LUAU_ASSERT(testbit(deadmask, FIXEDBIT)); // make sure we never sweep fixed objects
+        // skip memory blocks that are already freed
+        if (gco->gch.tt == LUA_TNIL)
+            continue;
 
-        int newwhite = luaC_white(g);
-
-        for (char* pos = start; pos != end; pos += blockSize)
+        // is the object alive?
+        if ((gco->gch.marked ^ WHITEBITS) & deadmask)
         {
-            GCObject* gco = (GCObject*)pos;
-
-            // skip memory blocks that are already freed
-            if (gco->gch.tt == LUA_TNIL)
-                continue;
-
-            // is the object alive?
-            if ((gco->gch.marked ^ WHITEBITS) & deadmask)
-            {
-                LUAU_ASSERT(!isdead(g, gco));
-                // make it white (for next cycle)
-                gco->gch.marked = cast_byte((gco->gch.marked & maskmarks) | newwhite);
-            }
-            else
-            {
-                LUAU_ASSERT(isdead(g, gco));
-                freeobj(L, gco, page);
-
-                // if the last block was removed, page would be removed as well
-                if (--busyBlocks == 0)
-                    return int(pos - start) / blockSize + 1;
-            }
+            LUAU_ASSERT(!isdead(g, gco));
+            // make it white (for next cycle)
+            gco->gch.marked = cast_byte((gco->gch.marked & maskmarks) | newwhite);
         }
-    }
-    else
-    {
-        for (char* pos = start; pos != end; pos += blockSize)
+        else
         {
-            GCObject* gco = (GCObject*)pos;
+            LUAU_ASSERT(isdead(g, gco));
+            freeobj(L, gco, page);
 
-            // skip memory blocks that are already freed
-            if (gco->gch.tt == LUA_TNIL)
-                continue;
-
-            // when true is returned it means that the element was deleted
-            if (sweepgco(L, page, gco))
-            {
-                // if the last block was removed, page would be removed as well
-                if (--busyBlocks == 0)
-                    return int(pos - start) / blockSize + 1;
-            }
+            // if the last block was removed, page would be removed as well
+            if (--busyBlocks == 0)
+                return int(pos - start) / blockSize + 1;
         }
     }
 
@@ -1009,15 +932,8 @@ static size_t gcstep(lua_State* L, size_t limit)
         if (g->sweepgcopage == NULL)
         {
             // don't forget to visit main thread, it's the only object not allocated in GCO pages
-            if (FFlag::LuauFasterSweep)
-            {
-                LUAU_ASSERT(!isdead(g, obj2gco(g->mainthread)));
-                makewhite(g, obj2gco(g->mainthread)); // make it white (for next cycle)
-            }
-            else
-            {
-                sweepgco(L, NULL, obj2gco(g->mainthread));
-            }
+            LUAU_ASSERT(!isdead(g, obj2gco(g->mainthread)));
+            makewhite(g, obj2gco(g->mainthread)); // make it white (for next cycle)
 
             shrinkbuffers(L);
 

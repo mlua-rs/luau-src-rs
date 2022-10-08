@@ -38,7 +38,7 @@ int luaV_tostring(lua_State* L, StkId obj)
         double n = nvalue(obj);
         char* e = luai_num2str(s, n);
         LUAU_ASSERT(e < s + sizeof(s));
-        setsvalue2s(L, obj, luaS_newlstr(L, s, e - s));
+        setsvalue(L, obj, luaS_newlstr(L, s, e - s));
         return 1;
     }
 }
@@ -70,7 +70,7 @@ static StkId callTMres(lua_State* L, StkId res, const TValue* f, const TValue* p
     luaD_call(L, L->top - 3, 1);
     res = restorestack(L, result);
     L->top--;
-    setobjs2s(L, res, L->top);
+    setobj2s(L, res, L->top);
     return res;
 }
 
@@ -220,8 +220,13 @@ int luaV_strcmp(const TString* ls, const TString* rs)
         return 0;
 
     const char* l = getstr(ls);
-    size_t ll = ls->len;
     const char* r = getstr(rs);
+
+    // always safe to read one character because even empty strings are nul terminated
+    if (*l != *r)
+        return uint8_t(*l) - uint8_t(*r);
+
+    size_t ll = ls->len;
     size_t lr = rs->len;
     size_t lmin = ll < lr ? ll : lr;
 
@@ -350,11 +355,11 @@ void luaV_concat(lua_State* L, int total, int last)
 
             if (tl < LUA_BUFFERSIZE)
             {
-                setsvalue2s(L, top - n, luaS_newlstr(L, buffer, tl));
+                setsvalue(L, top - n, luaS_newlstr(L, buffer, tl));
             }
             else
             {
-                setsvalue2s(L, top - n, luaS_buffinish(L, ts));
+                setsvalue(L, top - n, luaS_buffinish(L, ts));
             }
         }
         total -= n - 1; // got `n' strings to create 1 new
@@ -507,4 +512,82 @@ void luaV_dolen(lua_State* L, StkId ra, const TValue* rb)
     StkId res = callTMres(L, ra, tm, rb, luaO_nilobject);
     if (!ttisnumber(res))
         luaG_runerror(L, "'__len' must return a number"); // note, we can't access rb since stack may have been reallocated
+}
+
+LUAU_NOINLINE void luaV_prepareFORN(lua_State* L, StkId plimit, StkId pstep, StkId pinit)
+{
+    if (!ttisnumber(pinit) && !luaV_tonumber(pinit, pinit))
+        luaG_forerror(L, pinit, "initial value");
+    if (!ttisnumber(plimit) && !luaV_tonumber(plimit, plimit))
+        luaG_forerror(L, plimit, "limit");
+    if (!ttisnumber(pstep) && !luaV_tonumber(pstep, pstep))
+        luaG_forerror(L, pstep, "step");
+}
+
+// calls a C function f with no yielding support; optionally save one resulting value to the res register
+// the function and arguments have to already be pushed to L->top
+LUAU_NOINLINE void luaV_callTM(lua_State* L, int nparams, int res)
+{
+    ++L->nCcalls;
+
+    if (L->nCcalls >= LUAI_MAXCCALLS)
+        luaD_checkCstack(L);
+
+    luaD_checkstack(L, LUA_MINSTACK);
+
+    StkId top = L->top;
+    StkId fun = top - nparams - 1;
+
+    CallInfo* ci = incr_ci(L);
+    ci->func = fun;
+    ci->base = fun + 1;
+    ci->top = top + LUA_MINSTACK;
+    ci->savedpc = NULL;
+    ci->flags = 0;
+    ci->nresults = (res >= 0);
+    LUAU_ASSERT(ci->top <= L->stack_last);
+
+    LUAU_ASSERT(ttisfunction(ci->func));
+    LUAU_ASSERT(clvalue(ci->func)->isC);
+
+    L->base = fun + 1;
+    LUAU_ASSERT(L->top == L->base + nparams);
+
+    lua_CFunction func = clvalue(fun)->c.f;
+    int n = func(L);
+    LUAU_ASSERT(n >= 0); // yields should have been blocked by nCcalls
+
+    // ci is our callinfo, cip is our parent
+    // note that we read L->ci again since it may have been reallocated by the call
+    CallInfo* cip = L->ci - 1;
+
+    // copy return value into parent stack
+    if (res >= 0)
+    {
+        if (n > 0)
+        {
+            setobj2s(L, &cip->base[res], L->top - n);
+        }
+        else
+        {
+            setnilvalue(&cip->base[res]);
+        }
+    }
+
+    L->ci = cip;
+    L->base = cip->base;
+    L->top = cip->top;
+
+    --L->nCcalls;
+}
+
+LUAU_NOINLINE void luaV_tryfuncTM(lua_State* L, StkId func)
+{
+    const TValue* tm = luaT_gettmbyobj(L, func, TM_CALL);
+    if (!ttisfunction(tm))
+        luaG_typeerror(L, func, "call");
+    for (StkId p = L->top; p > func; p--) // open space for metamethod
+        setobj2s(L, p, p - 1);
+    L->top++;              // stack space pre-allocated by the caller
+    setobj2s(L, func, tm); // tag method is the new function to be called
 }

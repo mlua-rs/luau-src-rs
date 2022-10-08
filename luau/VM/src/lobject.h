@@ -200,20 +200,14 @@ typedef struct lua_TValue
 ** different types of sets, according to destination
 */
 
-// from stack to (same) stack
-#define setobjs2s setobj
-// to stack (not from same stack)
+// to stack
 #define setobj2s setobj
-#define setsvalue2s setsvalue
-#define sethvalue2s sethvalue
-#define setptvalue2s setptvalue
-// from table to same table
+// from table to same table (no barrier)
 #define setobjt2t setobj
-// to table
+// to table (needs barrier)
 #define setobj2t setobj
-// to new object
+// to new object (no barrier)
 #define setobj2n setobj
-#define setsvalue2n setsvalue
 
 #define setttype(obj, tt) (ttype(obj) = (tt))
 
@@ -280,6 +274,10 @@ typedef struct Proto
 
     TString* debugname;
     uint8_t* debuginsn; // a copy of code[] array with just opcodes
+
+#if LUA_CUSTOM_EXECUTION
+    void* execdata;
+#endif
 
     GCObject* gclist;
 
@@ -462,4 +460,4 @@ LUAI_FUNC int luaO_rawequalKey(const TKey* t1, const TValue* t2);
 LUAI_FUNC int luaO_str2d(const char* s, double* result);
 LUAI_FUNC const char* luaO_pushvfstring(lua_State* L, const char* fmt, va_list argp);
 LUAI_FUNC const char* luaO_pushfstring(lua_State* L, const char* fmt, ...);
-LUAI_FUNC void luaO_chunkid(char* out, const char* source, size_t len);
+LUAI_FUNC const char* luaO_chunkid(char* buf, size_t buflen, const char* source, size_t srclen);
