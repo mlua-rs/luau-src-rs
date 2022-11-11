@@ -11,9 +11,10 @@ inline bool isFlagExperimental(const char* flag)
     // Flags in this list are disabled by default in various command-line tools. They may have behavior that is not fully final,
     // or critical bugs that are found after the code has been submitted.
     static const char* kList[] = {
-        "LuauLowerBoundsCalculation",
         "LuauInterpolatedStringBaseSupport",
         "LuauInstantiateInSubtyping", // requires some fixes to lua-apps code
+        "LuauOptionalNextKey",        // waiting for a fix to land in lua-apps
+        "LuauTryhardAnd",             // waiting for a fix in graphql-lua -> apollo-client-lia -> lua-apps
         // makes sure we always have at least one entry
         nullptr,
     };

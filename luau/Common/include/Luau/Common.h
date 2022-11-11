@@ -20,6 +20,10 @@
 #define LUAU_DEBUGBREAK() __builtin_trap()
 #endif
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define LUAU_BIG_ENDIAN
+#endif
+
 namespace Luau
 {
 
@@ -122,3 +126,9 @@ FValue<T>* FValue<T>::list = nullptr;
     { \
     Luau::FValue<int> flag(#flag, def, true); \
     }
+
+#if defined(__GNUC__)
+#define LUAU_PRINTF_ATTR(fmt, arg) __attribute__((format(printf, fmt, arg)))
+#else
+#define LUAU_PRINTF_ATTR(fmt, arg)
+#endif
