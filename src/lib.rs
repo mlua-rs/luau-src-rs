@@ -115,6 +115,7 @@ impl Build {
             .include(&vm_include_dir)
             .include(&common_include_dir)
             .define("LUA_API", "extern \"C\"")
+            .define("LUAI_MAXCSTACK", "100000")
             // .define("LUA_USE_LONGJMP", "1")
             .add_files_by_ext(&vm_source_dir, "cpp")
             .out_dir(&lib_dir)
