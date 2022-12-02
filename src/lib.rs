@@ -179,6 +179,15 @@ impl Artifacts {
         if let Some(ref cpp_stdlib) = self.cpp_stdlib {
             println!("cargo:rustc-link-lib={}", cpp_stdlib);
         }
+        if let Some(version) = self.version() {
+            println!("cargo:rustc-env=LUAU_VERSION={}", version);
+        }
+    }
+
+    pub fn version(&self) -> Option<String> {
+        let pkg_version = env!("CARGO_PKG_VERSION");
+        let (_, luau_version) = pkg_version.split_once("+luau")?;
+        Some(format!("0.{luau_version}"))
     }
 }
 
