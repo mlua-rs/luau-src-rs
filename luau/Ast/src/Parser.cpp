@@ -24,9 +24,6 @@ LUAU_DYNAMIC_FASTFLAGVARIABLE(LuaReportParseIntegerIssues, false)
 
 LUAU_FASTFLAGVARIABLE(LuauInterpolatedStringBaseSupport, false)
 
-LUAU_FASTFLAGVARIABLE(LuauCommaParenWarnings, false)
-LUAU_FASTFLAGVARIABLE(LuauTableConstructorRecovery, false)
-
 LUAU_FASTFLAGVARIABLE(LuauParserErrorsOnMissingDefaultTypePackArgument, false)
 
 bool lua_telemetry_parsed_out_of_range_bin_integer = false;
@@ -1084,7 +1081,7 @@ void Parser::parseExprList(TempVector<AstExpr*>& result)
     {
         nextLexeme();
 
-        if (FFlag::LuauCommaParenWarnings && lexer.current().type == ')')
+        if (lexer.current().type == ')')
         {
             report(lexer.current().location, "Expected expression after ',' but got ')' instead");
             break;
@@ -1179,7 +1176,7 @@ AstTypePack* Parser::parseTypeList(TempVector<AstType*>& result, TempVector<std:
 
         nextLexeme();
 
-        if (FFlag::LuauCommaParenWarnings && lexer.current().type == ')')
+        if (lexer.current().type == ')')
         {
             report(lexer.current().location, "Expected type after ',' but got ')' instead");
             break;
@@ -2317,8 +2314,7 @@ AstExpr* Parser::parseTableConstructor()
 
     while (lexer.current().type != '}')
     {
-        if (FFlag::LuauTableConstructorRecovery)
-            lastElementIndent = lexer.current().location.begin.column;
+        lastElementIndent = lexer.current().location.begin.column;
 
         if (lexer.current().type == '[')
         {
@@ -2364,8 +2360,7 @@ AstExpr* Parser::parseTableConstructor()
         {
             nextLexeme();
         }
-        else if (FFlag::LuauTableConstructorRecovery && (lexer.current().type == '[' || lexer.current().type == Lexeme::Name) &&
-                 lexer.current().location.begin.column == lastElementIndent)
+        else if ((lexer.current().type == '[' || lexer.current().type == Lexeme::Name) && lexer.current().location.begin.column == lastElementIndent)
         {
             report(lexer.current().location, "Expected ',' after table constructor element");
         }
@@ -2556,7 +2551,7 @@ std::pair<AstArray<AstGenericType>, AstArray<AstGenericTypePack>> Parser::parseG
             {
                 nextLexeme();
 
-                if (FFlag::LuauCommaParenWarnings && lexer.current().type == '>')
+                if (lexer.current().type == '>')
                 {
                     report(lexer.current().location, "Expected type after ',' but got '>' instead");
                     break;
@@ -2661,6 +2656,7 @@ AstExpr* Parser::parseInterpString()
     TempVector<AstExpr*> expressions(scratchExpr);
 
     Location startLocation = lexer.current().location;
+    Location endLocation;
 
     do
     {
@@ -2668,16 +2664,16 @@ AstExpr* Parser::parseInterpString()
         LUAU_ASSERT(currentLexeme.type == Lexeme::InterpStringBegin || currentLexeme.type == Lexeme::InterpStringMid ||
                     currentLexeme.type == Lexeme::InterpStringEnd || currentLexeme.type == Lexeme::InterpStringSimple);
 
-        Location location = currentLexeme.location;
+        endLocation = currentLexeme.location;
 
-        Location startOfBrace = Location(location.end, 1);
+        Location startOfBrace = Location(endLocation.end, 1);
 
         scratchData.assign(currentLexeme.data, currentLexeme.length);
 
         if (!Lexer::fixupQuotedString(scratchData))
         {
             nextLexeme();
-            return reportExprError(startLocation, {}, "Interpolated string literal contains malformed escape sequence");
+            return reportExprError(Location{startLocation, endLocation}, {}, "Interpolated string literal contains malformed escape sequence");
         }
 
         AstArray<char> chars = copy(scratchData);
@@ -2688,15 +2684,36 @@ AstExpr* Parser::parseInterpString()
 
         if (currentLexeme.type == Lexeme::InterpStringEnd || currentLexeme.type == Lexeme::InterpStringSimple)
         {
-            AstArray<AstArray<char>> stringsArray = copy(strings);
-            AstArray<AstExpr*> expressionsArray = copy(expressions);
-
-            return allocator.alloc<AstExprInterpString>(startLocation, stringsArray, expressionsArray);
+            break;
         }
 
-        AstExpr* expression = parseExpr();
+        bool errorWhileChecking = false;
 
-        expressions.push_back(expression);
+        switch (lexer.current().type)
+        {
+        case Lexeme::InterpStringMid:
+        case Lexeme::InterpStringEnd:
+        {
+            errorWhileChecking = true;
+            nextLexeme();
+            expressions.push_back(reportExprError(endLocation, {}, "Malformed interpolated string, expected expression inside '{}'"));
+            break;
+        }
+        case Lexeme::BrokenString:
+        {
+            errorWhileChecking = true;
+            nextLexeme();
+            expressions.push_back(reportExprError(endLocation, {}, "Malformed interpolated string, did you forget to add a '`'?"));
+            break;
+        }
+        default:
+            expressions.push_back(parseExpr());
+        }
+
+        if (errorWhileChecking)
+        {
+            break;
+        }
 
         switch (lexer.current().type)
         {
@@ -2706,14 +2723,18 @@ AstExpr* Parser::parseInterpString()
             break;
         case Lexeme::BrokenInterpDoubleBrace:
             nextLexeme();
-            return reportExprError(location, {}, ERROR_INVALID_INTERP_DOUBLE_BRACE);
+            return reportExprError(endLocation, {}, ERROR_INVALID_INTERP_DOUBLE_BRACE);
         case Lexeme::BrokenString:
             nextLexeme();
-            return reportExprError(location, {}, "Malformed interpolated string, did you forget to add a '}'?");
+            return reportExprError(endLocation, {}, "Malformed interpolated string, did you forget to add a '}'?");
         default:
-            return reportExprError(location, {}, "Malformed interpolated string, got %s", lexer.current().toString().c_str());
+            return reportExprError(endLocation, {}, "Malformed interpolated string, got %s", lexer.current().toString().c_str());
         }
     } while (true);
+
+    AstArray<AstArray<char>> stringsArray = copy(strings);
+    AstArray<AstExpr*> expressionsArray = copy(expressions);
+    return allocator.alloc<AstExprInterpString>(Location{startLocation, endLocation}, stringsArray, expressionsArray);
 }
 
 AstExpr* Parser::parseNumber()
