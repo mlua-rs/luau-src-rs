@@ -35,7 +35,7 @@ extern "C" {
 }
 
 pub unsafe fn lua_getglobal(state: *mut c_void, k: *const c_char) {
-    lua_getfield(state, -10002 /* LUA_GLOBALSINDEX */, k);
+    lua_getfield(state, -102002 /* LUA_GLOBALSINDEX */, k);
 }
 
 #[test]
