@@ -27,6 +27,7 @@ LUAU_FASTINTVARIABLE(LuauCompileInlineDepth, 5)
 
 LUAU_FASTFLAG(LuauInterpolatedStringBaseSupport)
 LUAU_FASTFLAGVARIABLE(LuauMultiAssignmentConflictFix, false)
+LUAU_FASTFLAGVARIABLE(LuauSelfAssignmentSkip, false)
 
 namespace Luau
 {
@@ -350,7 +351,7 @@ struct Compiler
     {
         LUAU_ASSERT(!multRet || unsigned(target + targetCount) == regTop);
 
-        setDebugLine(expr); // normally compileExpr sets up line info, but compileExprCall can be called directly
+        setDebugLine(expr); // normally compileExpr sets up line info, but compileExprVarargs can be called directly
 
         bytecode.emitABC(LOP_GETVARARGS, target, multRet ? 0 : uint8_t(targetCount + 1), 0);
     }
@@ -2027,7 +2028,9 @@ struct Compiler
             // note: this can't check expr->upvalue because upvalues may be upgraded to locals during inlining
             if (int reg = getExprLocalReg(expr); reg >= 0)
             {
-                bytecode.emitABC(LOP_MOVE, target, uint8_t(reg), 0);
+                // Optimization: we don't need to move if target happens to be in the same register
+                if (!FFlag::LuauSelfAssignmentSkip || options.optimizationLevel == 0 || target != reg)
+                    bytecode.emitABC(LOP_MOVE, target, uint8_t(reg), 0);
             }
             else
             {
