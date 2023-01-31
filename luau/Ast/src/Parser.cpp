@@ -14,15 +14,8 @@
 LUAU_FASTINTVARIABLE(LuauRecursionLimit, 1000)
 LUAU_FASTINTVARIABLE(LuauParseErrorLimit, 100)
 
-LUAU_FASTFLAGVARIABLE(LuauFixNamedFunctionParse, false)
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuaReportParseWrongNamedType, false)
-
-bool lua_telemetry_parsed_named_non_function_type = false;
-
 LUAU_FASTFLAGVARIABLE(LuauErrorDoubleHexPrefix, false)
 LUAU_DYNAMIC_FASTFLAGVARIABLE(LuaReportParseIntegerIssues, false)
-
-LUAU_FASTFLAGVARIABLE(LuauInterpolatedStringBaseSupport, false)
 
 LUAU_FASTFLAGVARIABLE(LuauParserErrorsOnMissingDefaultTypePackArgument, false)
 
@@ -773,7 +766,7 @@ AstStat* Parser::parseTypeAlias(const Location& start, bool exported)
 
     AstType* type = parseTypeAnnotation();
 
-    return allocator.alloc<AstStatTypeAlias>(Location(start, type->location), name->name, generics, genericPacks, type, exported);
+    return allocator.alloc<AstStatTypeAlias>(Location(start, type->location), name->name, name->location, generics, genericPacks, type, exported);
 }
 
 AstDeclaredClassProp Parser::parseDeclaredClassMethod()
@@ -1423,7 +1416,7 @@ AstTypeOrPack Parser::parseFunctionTypeAnnotation(bool allowPack)
 
     AstArray<AstType*> paramTypes = copy(params);
 
-    if (FFlag::LuauFixNamedFunctionParse && !names.empty())
+    if (!names.empty())
         forceFunctionType = true;
 
     bool returnTypeIntroducer = lexer.current().type == Lexeme::SkinnyArrow || lexer.current().type == ':';
@@ -1431,9 +1424,6 @@ AstTypeOrPack Parser::parseFunctionTypeAnnotation(bool allowPack)
     // Not a function at all. Just a parenthesized type. Or maybe a type pack with a single element
     if (params.size() == 1 && !varargAnnotation && !forceFunctionType && !returnTypeIntroducer)
     {
-        if (DFFlag::LuaReportParseWrongNamedType && !names.empty())
-            lua_telemetry_parsed_named_non_function_type = true;
-
         if (allowPack)
             return {{}, allocator.alloc<AstTypePackExplicit>(begin.location, AstTypeList{paramTypes, nullptr})};
         else
@@ -1441,12 +1431,7 @@ AstTypeOrPack Parser::parseFunctionTypeAnnotation(bool allowPack)
     }
 
     if (!forceFunctionType && !returnTypeIntroducer && allowPack)
-    {
-        if (DFFlag::LuaReportParseWrongNamedType && !names.empty())
-            lua_telemetry_parsed_named_non_function_type = true;
-
         return {{}, allocator.alloc<AstTypePackExplicit>(begin.location, AstTypeList{paramTypes, varargAnnotation})};
-    }
 
     AstArray<std::optional<AstArgumentName>> paramNames = copy(names);
 
@@ -2187,11 +2172,11 @@ AstExpr* Parser::parseSimpleExpr()
         return parseNumber();
     }
     else if (lexer.current().type == Lexeme::RawString || lexer.current().type == Lexeme::QuotedString ||
-             (FFlag::LuauInterpolatedStringBaseSupport && lexer.current().type == Lexeme::InterpStringSimple))
+             lexer.current().type == Lexeme::InterpStringSimple)
     {
         return parseString();
     }
-    else if (FFlag::LuauInterpolatedStringBaseSupport && lexer.current().type == Lexeme::InterpStringBegin)
+    else if (lexer.current().type == Lexeme::InterpStringBegin)
     {
         return parseInterpString();
     }
