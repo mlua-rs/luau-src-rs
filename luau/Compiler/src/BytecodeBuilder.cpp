@@ -556,6 +556,11 @@ void BytecodeBuilder::pushDebugUpval(StringRef name)
     debugUpvals.push_back(upval);
 }
 
+size_t BytecodeBuilder::getInstructionCount() const
+{
+    return insns.size();
+}
+
 uint32_t BytecodeBuilder::getDebugPC() const
 {
     return uint32_t(insns.size());
@@ -1696,8 +1701,6 @@ void BytecodeBuilder::dumpConstant(std::string& result, int k) const
             formatAppend(result, "'%s'", func.dumpname.c_str());
         break;
     }
-    default:
-        LUAU_UNREACHABLE();
     }
 }
 

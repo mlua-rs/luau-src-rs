@@ -84,6 +84,8 @@ impl Build {
         if cfg!(not(debug_assertions)) {
             config.define("NDEBUG", None);
             config.opt_level(2);
+            // this flag allows compiler to lower sqrt() into a single CPU instruction
+            config.flag_if_supported("-fno-math-errno");
         }
 
         // Build Ast
