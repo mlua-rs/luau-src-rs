@@ -6,6 +6,8 @@ pub struct Build {
     out_dir: Option<PathBuf>,
     target: Option<String>,
     host: Option<String>,
+    // Enable code generator (jit)
+    enable_codegen: bool,
 }
 
 pub struct Artifacts {
@@ -22,6 +24,7 @@ impl Build {
             out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("luau-build")),
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
+            enable_codegen: false,
         }
     }
 
@@ -40,6 +43,11 @@ impl Build {
         self
     }
 
+    pub fn enable_codegen(&mut self, enable: bool) -> &mut Build {
+        self.enable_codegen = enable;
+        self
+    }
+
     pub fn build(&mut self) -> Artifacts {
         let target = &self.target.as_ref().expect("TARGET not set")[..];
         let host = &self.host.as_ref().expect("HOST not set")[..];
@@ -51,6 +59,8 @@ impl Build {
         let common_include_dir = source_dir_base.join("luau").join("Common").join("include");
         let ast_source_dir = source_dir_base.join("luau").join("Ast").join("src");
         let ast_include_dir = source_dir_base.join("luau").join("Ast").join("include");
+        let codegen_source_dir = source_dir_base.join("luau").join("CodeGen").join("src");
+        let codegen_include_dir = source_dir_base.join("luau").join("CodeGen").join("include");
         let compiler_source_dir = source_dir_base.join("luau").join("Compiler").join("src");
         let compiler_include_dir = source_dir_base
             .join("luau")
@@ -81,6 +91,10 @@ impl Build {
             .flag_if_supported("/std:c++17") // MSVC
             .cpp(true);
 
+        if self.enable_codegen {
+            config.define("LUA_CUSTOM_EXECUTION", None);
+        }
+
         if cfg!(not(debug_assertions)) {
             config.define("NDEBUG", None);
             config.opt_level(2);
@@ -97,6 +111,24 @@ impl Build {
             .add_files_by_ext(&ast_source_dir, "cpp")
             .out_dir(&lib_dir)
             .compile(ast_lib_name);
+
+        // Build CogeGen
+        let codegen_lib_name = "luaucodegen";
+        if self.enable_codegen {
+            config
+                .clone()
+                .include(&codegen_include_dir)
+                .include(&common_include_dir)
+                .include(&vm_include_dir)
+                .include(&vm_source_dir)
+                .define("LUACODEGEN_API", "extern \"C\"")
+                // Code generator uses lua VM internals, so we need to provide the same defines used to build VM
+                .define("LUA_API", "extern \"C\"")
+                .define("LUAI_MAXCSTACK", "100000")
+                .add_files_by_ext(&codegen_source_dir, "cpp")
+                .out_dir(&lib_dir)
+                .compile(codegen_lib_name);
+        }
 
         // Build Compiler
         let compiler_lib_name = "luaucompiler";
@@ -130,7 +162,7 @@ impl Build {
             fs::copy(compiler_include_dir.join(f), include_dir.join(f)).unwrap();
         }
 
-        Artifacts {
+        let mut artifacts = Artifacts {
             lib_dir,
             include_dir,
             libs: vec![
@@ -139,7 +171,13 @@ impl Build {
                 vm_lib_name.to_string(),
             ],
             cpp_stdlib: Self::get_cpp_link_stdlib(target),
+        };
+
+        if self.enable_codegen {
+            artifacts.libs.push(codegen_lib_name.to_string());
         }
+
+        artifacts
     }
 
     fn get_cpp_link_stdlib(target: &str) -> Option<String> {
