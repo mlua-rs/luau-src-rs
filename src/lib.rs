@@ -6,6 +6,10 @@ pub struct Build {
     out_dir: Option<PathBuf>,
     target: Option<String>,
     host: Option<String>,
+    // Max number of Lua stack slots that a C function can use
+    max_cstack_size: usize,
+    // Use longjmp instead of C++ exceptions
+    use_longjmp: bool,
     // Enable code generator (jit)
     enable_codegen: bool,
 }
@@ -24,6 +28,8 @@ impl Build {
             out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("luau-build")),
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
+            max_cstack_size: 100000,
+            use_longjmp: false,
             enable_codegen: false,
         }
     }
@@ -40,6 +46,16 @@ impl Build {
 
     pub fn host(&mut self, host: &str) -> &mut Build {
         self.host = Some(host.to_string());
+        self
+    }
+
+    pub fn set_max_cstack_size(&mut self, size: usize) -> &mut Build {
+        self.max_cstack_size = size;
+        self
+    }
+
+    pub fn use_longjmp(&mut self, r#use: bool) -> &mut Build {
+        self.use_longjmp = r#use;
         self
     }
 
@@ -91,6 +107,13 @@ impl Build {
             .flag_if_supported("/std:c++17") // MSVC
             .cpp(true);
 
+        // Common defines
+        config.define("LUAI_MAXCSTACK", &*self.max_cstack_size.to_string());
+
+        if self.use_longjmp {
+            config.define("LUA_USE_LONGJMP", "1");
+        }
+
         if self.enable_codegen {
             config.define("LUA_CUSTOM_EXECUTION", None);
         }
@@ -124,7 +147,6 @@ impl Build {
                 .define("LUACODEGEN_API", "extern \"C\"")
                 // Code generator uses lua VM internals, so we need to provide the same defines used to build VM
                 .define("LUA_API", "extern \"C\"")
-                .define("LUAI_MAXCSTACK", "100000")
                 .add_files_by_ext(&codegen_source_dir, "cpp")
                 .out_dir(&lib_dir)
                 .compile(codegen_lib_name);
@@ -149,8 +171,6 @@ impl Build {
             .include(&vm_include_dir)
             .include(&common_include_dir)
             .define("LUA_API", "extern \"C\"")
-            .define("LUAI_MAXCSTACK", "100000")
-            // .define("LUA_USE_LONGJMP", "1")
             .add_files_by_ext(&vm_source_dir, "cpp")
             .out_dir(&lib_dir)
             .compile(vm_lib_name);
