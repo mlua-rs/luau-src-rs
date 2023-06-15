@@ -12,6 +12,8 @@ pub struct Build {
     use_longjmp: bool,
     // Enable code generator (jit)
     enable_codegen: bool,
+    // Vector size, must be 3 (default) or 4
+    vector_size: usize,
 }
 
 pub struct Artifacts {
@@ -31,6 +33,7 @@ impl Build {
             max_cstack_size: 100000,
             use_longjmp: false,
             enable_codegen: false,
+            vector_size: 3,
         }
     }
 
@@ -61,6 +64,12 @@ impl Build {
 
     pub fn enable_codegen(&mut self, enable: bool) -> &mut Build {
         self.enable_codegen = enable;
+        self
+    }
+
+    pub fn set_vector_size(&mut self, size: usize) -> &mut Build {
+        assert!(size == 3 || size == 4);
+        self.vector_size = size;
         self
     }
 
@@ -109,6 +118,7 @@ impl Build {
 
         // Common defines
         config.define("LUAI_MAXCSTACK", &*self.max_cstack_size.to_string());
+        config.define("LUA_VECTOR_SIZE", &*self.vector_size.to_string());
 
         if self.use_longjmp {
             config.define("LUA_USE_LONGJMP", "1");
