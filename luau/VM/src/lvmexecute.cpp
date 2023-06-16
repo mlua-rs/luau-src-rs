@@ -16,9 +16,6 @@
 
 #include <string.h>
 
-LUAU_FASTFLAG(LuauUniformTopHandling)
-LUAU_FASTFLAG(LuauGetImportDirect)
-
 // Disable c99-designator to avoid the warning in CGOTO dispatch table
 #ifdef __clang__
 #if __has_warning("-Wc99-designator")
@@ -433,20 +430,8 @@ reentry:
                 {
                     uint32_t aux = *pc++;
 
-                    if (FFlag::LuauGetImportDirect)
-                    {
-                        VM_PROTECT(luaV_getimport(L, cl->env, k, ra, aux, /* propagatenil= */ false));
-                        VM_NEXT();
-                    }
-                    else
-                    {
-                        VM_PROTECT(luaV_getimport_dep(L, cl->env, k, aux, /* propagatenil= */ false));
-                        ra = VM_REG(LUAU_INSN_A(insn)); // previous call may change the stack
-
-                        setobj2s(L, ra, L->top - 1);
-                        L->top--;
-                        VM_NEXT();
-                    }
+                    VM_PROTECT(luaV_getimport(L, cl->env, k, ra, aux, /* propagatenil= */ false));
+                    VM_NEXT();
                 }
             }
 
@@ -1043,8 +1028,6 @@ reentry:
                 // we're done!
                 if (LUAU_UNLIKELY(ci->flags & LUA_CALLINFO_RETURN))
                 {
-                    if (!FFlag::LuauUniformTopHandling)
-                        L->top = res;
                     goto exit;
                 }
 

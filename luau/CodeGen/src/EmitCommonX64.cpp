@@ -278,39 +278,34 @@ void emitUpdateBase(AssemblyBuilderX64& build)
     build.mov(rBase, qword[rState + offsetof(lua_State, base)]);
 }
 
-static void emitSetSavedPc(IrRegAllocX64& regs, AssemblyBuilderX64& build, int pcpos)
+void emitInterrupt(AssemblyBuilderX64& build)
 {
-    ScopedRegX64 tmp1{regs, SizeX64::qword};
-    ScopedRegX64 tmp2{regs, SizeX64::qword};
+    // rax = pcpos + 1
+    // rbx = return address in native code
 
-    build.mov(tmp1.reg, sCode);
-    build.add(tmp1.reg, pcpos * sizeof(Instruction));
-    build.mov(tmp2.reg, qword[rState + offsetof(lua_State, ci)]);
-    build.mov(qword[tmp2.reg + offsetof(CallInfo, savedpc)], tmp1.reg);
-}
+    // note: rbx is non-volatile so it will be saved across interrupt call automatically
 
-void emitInterrupt(IrRegAllocX64& regs, AssemblyBuilderX64& build, int pcpos)
-{
+    RegisterX64 rArg1 = (build.abi == ABIX64::Windows) ? rcx : rdi;
+    RegisterX64 rArg2 = (build.abi == ABIX64::Windows) ? rdx : rsi;
+
     Label skip;
 
-    ScopedRegX64 tmp{regs, SizeX64::qword};
+    // Update L->ci->savedpc; required in case interrupt errors
+    build.mov(rcx, sCode);
+    build.lea(rcx, addr[rcx + rax * sizeof(Instruction)]);
+    build.mov(rax, qword[rState + offsetof(lua_State, ci)]);
+    build.mov(qword[rax + offsetof(CallInfo, savedpc)], rcx);
 
-    // Skip if there is no interrupt set
-    build.mov(tmp.reg, qword[rState + offsetof(lua_State, global)]);
-    build.mov(tmp.reg, qword[tmp.reg + offsetof(global_State, cb.interrupt)]);
-    build.test(tmp.reg, tmp.reg);
+    // Load interrupt handler; it may be nullptr in case the update raced with the check before we got here
+    build.mov(rax, qword[rState + offsetof(lua_State, global)]);
+    build.mov(rax, qword[rax + offsetof(global_State, cb.interrupt)]);
+    build.test(rax, rax);
     build.jcc(ConditionX64::Zero, skip);
 
-    emitSetSavedPc(regs, build, pcpos + 1);
-
     // Call interrupt
-    // TODO: This code should move to the end of the function, or even be outlined so that it can be shared by multiple interruptible instructions
-    IrCallWrapperX64 callWrap(regs, build);
-    callWrap.addArgument(SizeX64::qword, rState);
-    callWrap.addArgument(SizeX64::dword, -1);
-    callWrap.call(tmp.release());
-
-    emitUpdateBase(build); // interrupt may have reallocated stack
+    build.mov(rArg1, rState);
+    build.mov(dwordReg(rArg2), -1);
+    build.call(rax);
 
     // Check if we need to exit
     build.mov(al, byte[rState + offsetof(lua_State, status)]);
@@ -322,6 +317,10 @@ void emitInterrupt(IrRegAllocX64& regs, AssemblyBuilderX64& build, int pcpos)
     emitExit(build, /* continueInVm */ false);
 
     build.setLabel(skip);
+
+    emitUpdateBase(build); // interrupt may have reallocated stack
+
+    build.jmp(rbx);
 }
 
 void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, int pcpos)
@@ -351,6 +350,90 @@ void emitContinueCallInVm(AssemblyBuilderX64& build)
 
     emitExit(build, /* continueInVm */ true);
 }
+
+void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers)
+{
+    // input: res in rdi, number of written values in ecx
+    RegisterX64 res = rdi;
+    RegisterX64 written = ecx;
+
+    RegisterX64 ci = r8;
+    RegisterX64 cip = r9;
+    RegisterX64 nresults = esi;
+
+    build.mov(ci, qword[rState + offsetof(lua_State, ci)]);
+    build.lea(cip, addr[ci - sizeof(CallInfo)]);
+
+    // nresults = ci->nresults
+    build.mov(nresults, dword[ci + offsetof(CallInfo, nresults)]);
+
+    Label skipResultCopy;
+
+    // Fill the rest of the expected results (nresults - written) with 'nil'
+    RegisterX64 counter = written;
+    build.sub(counter, nresults); // counter = -(nresults - written)
+    build.jcc(ConditionX64::GreaterEqual, skipResultCopy);
+
+    Label repeatNilLoop = build.setLabel();
+    build.mov(dword[res + offsetof(TValue, tt)], LUA_TNIL);
+    build.add(res, sizeof(TValue));
+    build.inc(counter);
+    build.jcc(ConditionX64::NotZero, repeatNilLoop);
+
+    build.setLabel(skipResultCopy);
+
+    build.mov(qword[rState + offsetof(lua_State, ci)], cip);     // L->ci = cip
+    build.mov(rBase, qword[cip + offsetof(CallInfo, base)]);     // sync base = L->base while we have a chance
+    build.mov(qword[rState + offsetof(lua_State, base)], rBase); // L->base = cip->base
+
+    Label skipFixedRetTop;
+    build.test(nresults, nresults);                       // test here will set SF=1 for a negative number and it always sets OF to 0
+    build.jcc(ConditionX64::Less, skipFixedRetTop);       // jl jumps if SF != OF
+    build.mov(res, qword[cip + offsetof(CallInfo, top)]); // res = cip->top
+    build.setLabel(skipFixedRetTop);
+
+    build.mov(qword[rState + offsetof(lua_State, top)], res); // L->top = res
+
+    // Unlikely, but this might be the last return from VM
+    build.test(byte[ci + offsetof(CallInfo, flags)], LUA_CALLINFO_RETURN);
+    build.jcc(ConditionX64::NotZero, helpers.exitNoContinueVm);
+
+    // Returning back to the previous function is a bit tricky
+    // Registers alive: r9 (cip)
+    RegisterX64 proto = rcx;
+    RegisterX64 execdata = rbx;
+
+    // Change closure
+    build.mov(rax, qword[cip + offsetof(CallInfo, func)]);
+    build.mov(rax, qword[rax + offsetof(TValue, value.gc)]);
+    build.mov(sClosure, rax);
+
+    build.mov(proto, qword[rax + offsetof(Closure, l.p)]);
+
+    build.mov(execdata, qword[proto + offsetof(Proto, execdata)]);
+
+    build.test(byte[cip + offsetof(CallInfo, flags)], LUA_CALLINFO_NATIVE);
+    build.jcc(ConditionX64::Zero, helpers.exitContinueVm); // Continue in interpreter if function has no native data
+
+    // Change constants
+    build.mov(rConstants, qword[proto + offsetof(Proto, k)]);
+
+    // Change code
+    build.mov(rdx, qword[proto + offsetof(Proto, code)]);
+    build.mov(sCode, rdx);
+
+    build.mov(rax, qword[cip + offsetof(CallInfo, savedpc)]);
+
+    // To get instruction index from instruction pointer, we need to divide byte offset by 4
+    // But we will actually need to scale instruction index by 4 back to byte offset later so it cancels out
+    build.sub(rax, rdx);
+
+    // Get new instruction location and jump to it
+    build.mov(edx, dword[execdata + rax]);
+    build.add(rdx, qword[proto + offsetof(Proto, exectarget)]);
+    build.jmp(rdx);
+}
+
 
 } // namespace X64
 } // namespace CodeGen

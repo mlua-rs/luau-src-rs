@@ -801,6 +801,8 @@ struct IrBlock
     uint32_t start = ~0u;
     uint32_t finish = ~0u;
 
+    uint32_t sortkey = ~0u;
+
     Label label;
 };
 
@@ -823,6 +825,7 @@ struct IrFunction
     uint32_t validRestoreOpBlockIdx = 0;
 
     Proto* proto = nullptr;
+    bool variadic = false;
 
     CfgInfo cfg;
 

@@ -25,6 +25,7 @@ IrBuilder::IrBuilder()
 void IrBuilder::buildFunctionIr(Proto* proto)
 {
     function.proto = proto;
+    function.variadic = proto->is_vararg != 0;
 
     // Rebuild original control flow blocks
     rebuildBytecodeBasicBlocks(proto);
@@ -428,6 +429,7 @@ void IrBuilder::beginBlock(IrOp block)
     LUAU_ASSERT(target.start == ~0u || target.start == uint32_t(function.instructions.size()));
 
     target.start = uint32_t(function.instructions.size());
+    target.sortkey = target.start;
 
     inTerminatedBlock = false;
 }

@@ -9,8 +9,6 @@
 
 #include <vector>
 
-struct Proto;
-
 namespace Luau
 {
 namespace CodeGen
@@ -25,10 +23,11 @@ namespace A64
 
 struct IrLoweringA64
 {
-    IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, NativeState& data, Proto* proto, IrFunction& function);
+    IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, NativeState& data, IrFunction& function);
 
     void lowerInst(IrInst& inst, uint32_t index, IrBlock& next);
     void finishBlock();
+    void finishFunction();
 
     bool hasError() const;
 
@@ -55,16 +54,24 @@ struct IrLoweringA64
     IrBlock& blockOp(IrOp op) const;
     Label& labelOp(IrOp op) const;
 
+    struct InterruptHandler
+    {
+        Label self;
+        unsigned int pcpos;
+        Label next;
+    };
+
     AssemblyBuilderA64& build;
     ModuleHelpers& helpers;
     NativeState& data;
-    Proto* proto = nullptr; // Temporarily required to provide 'Instruction* pc' to old emitInst* methods
 
     IrFunction& function;
 
     IrRegAllocA64 regs;
 
     IrValueLocationTracking valueTracker;
+
+    std::vector<InterruptHandler> interruptHandlers;
 
     bool error = false;
 };
