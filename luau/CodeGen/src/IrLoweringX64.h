@@ -17,7 +17,6 @@ namespace CodeGen
 {
 
 struct ModuleHelpers;
-struct NativeState;
 struct AssemblyOptions;
 
 namespace X64
@@ -25,7 +24,7 @@ namespace X64
 
 struct IrLoweringX64
 {
-    IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, NativeState& data, IrFunction& function);
+    IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function);
 
     void lowerInst(IrInst& inst, uint32_t index, IrBlock& next);
     void finishBlock();
@@ -35,7 +34,7 @@ struct IrLoweringX64
 
     bool isFallthroughBlock(IrBlock target, IrBlock next);
     void jumpOrFallthrough(IrBlock& target, IrBlock& next);
-    void jumpOrAbortOnUndef(ConditionX64 cond, ConditionX64 condInverse, IrOp targetOrUndef);
+    void jumpOrAbortOnUndef(ConditionX64 cond, ConditionX64 condInverse, IrOp targetOrUndef, bool continueInVm = false);
 
     void storeDoubleAsFloat(OperandX64 dst, IrOp src);
 
@@ -61,9 +60,14 @@ struct IrLoweringX64
         Label next;
     };
 
+    struct ExitHandler
+    {
+        Label self;
+        unsigned int pcpos;
+    };
+
     AssemblyBuilderX64& build;
     ModuleHelpers& helpers;
-    NativeState& data;
 
     IrFunction& function;
 
@@ -72,6 +76,7 @@ struct IrLoweringX64
     IrValueLocationTracking valueTracker;
 
     std::vector<InterruptHandler> interruptHandlers;
+    std::vector<ExitHandler> exitHandlers;
 };
 
 } // namespace X64

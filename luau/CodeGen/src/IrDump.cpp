@@ -163,6 +163,8 @@ const char* getCmdName(IrCmd cmd)
         return "JUMP_SLOT_MATCH";
     case IrCmd::TABLE_LEN:
         return "TABLE_LEN";
+    case IrCmd::STRING_LEN:
+        return "STRING_LEN";
     case IrCmd::NEW_TABLE:
         return "NEW_TABLE";
     case IrCmd::DUP_TABLE:
@@ -297,6 +299,10 @@ const char* getCmdName(IrCmd cmd)
         return "BITCOUNTRZ_UINT";
     case IrCmd::INVOKE_LIBM:
         return "INVOKE_LIBM";
+    case IrCmd::GET_TYPE:
+        return "GET_TYPE";
+    case IrCmd::GET_TYPEOF:
+        return "GET_TYPEOF";
     }
 
     LUAU_UNREACHABLE();

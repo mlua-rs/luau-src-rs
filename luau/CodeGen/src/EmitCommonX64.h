@@ -170,16 +170,18 @@ void callLengthHelper(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, in
 void callPrepareForN(IrRegAllocX64& regs, AssemblyBuilderX64& build, int limit, int step, int init);
 void callGetTable(IrRegAllocX64& regs, AssemblyBuilderX64& build, int rb, OperandX64 c, int ra);
 void callSetTable(IrRegAllocX64& regs, AssemblyBuilderX64& build, int rb, OperandX64 c, int ra);
-void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, int ra, Label& skip);
-void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, int ra);
+void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, int ra, int ratag, Label& skip);
+void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, int ra, int ratag);
 void callBarrierTableFast(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 table, IrOp tableOp);
 void callStepGc(IrRegAllocX64& regs, AssemblyBuilderX64& build);
 
+void emitClearNativeFlag(AssemblyBuilderX64& build);
 void emitExit(AssemblyBuilderX64& build, bool continueInVm);
 void emitUpdateBase(AssemblyBuilderX64& build);
 void emitInterrupt(AssemblyBuilderX64& build);
 void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, int pcpos);
 
+void emitUpdatePcAndContinueInVm(AssemblyBuilderX64& build);
 void emitContinueCallInVm(AssemblyBuilderX64& build);
 
 void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers);

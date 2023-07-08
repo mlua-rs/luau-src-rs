@@ -22,10 +22,9 @@ namespace CodeGen
 namespace X64
 {
 
-IrLoweringX64::IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, NativeState& data, IrFunction& function)
+IrLoweringX64::IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function)
     : build(build)
     , helpers(helpers)
-    , data(data)
     , function(function)
     , regs(build, function)
     , valueTracker(function)
@@ -585,6 +584,13 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         build.vcvtsi2sd(inst.regX64, inst.regX64, eax);
         break;
     }
+    case IrCmd::STRING_LEN:
+    {
+        RegisterX64 ptr = regOp(inst.a);
+        inst.regX64 = regs.allocReg(SizeX64::dword, index);
+        build.mov(inst.regX64, dword[ptr + offsetof(TString, len)]);
+        break;
+    }
     case IrCmd::NEW_TABLE:
     {
         IrCallWrapperX64 callWrap(regs, build, index);
@@ -721,9 +727,6 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         int nparams = intOp(inst.e);
         int nresults = intOp(inst.f);
 
-        ScopedRegX64 func{regs, SizeX64::qword};
-        build.mov(func.reg, qword[rNativeContext + offsetof(NativeContext, luauF_table) + bfid * sizeof(luau_FastFunction)]);
-
         IrCallWrapperX64 callWrap(regs, build, index);
         callWrap.addArgument(SizeX64::qword, rState);
         callWrap.addArgument(SizeX64::qword, luauRegAddress(ra));
@@ -748,6 +751,9 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         {
             callWrap.addArgument(SizeX64::dword, nparams);
         }
+
+        ScopedRegX64 func{regs, SizeX64::qword};
+        build.mov(func.reg, qword[rNativeContext + offsetof(NativeContext, luauF_table) + bfid * sizeof(luau_FastFunction)]);
 
         callWrap.call(func.release());
         inst.regX64 = regs.takeReg(eax, index); // Result of a builtin call is returned in eax
@@ -872,16 +878,19 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
 
         tmp1.free();
 
-        callBarrierObject(regs, build, tmp2.release(), {}, vmRegOp(inst.b));
+        callBarrierObject(regs, build, tmp2.release(), {}, vmRegOp(inst.b), /* ratag */ -1);
         break;
     }
     case IrCmd::PREPARE_FORN:
         callPrepareForN(regs, build, vmRegOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c));
         break;
     case IrCmd::CHECK_TAG:
+    {
+        bool continueInVm = (inst.d.kind == IrOpKind::Constant && intOp(inst.d));
         build.cmp(memRegTagOp(inst.a), tagOp(inst.b));
-        jumpOrAbortOnUndef(ConditionX64::NotEqual, ConditionX64::Equal, inst.c);
+        jumpOrAbortOnUndef(ConditionX64::NotEqual, ConditionX64::Equal, inst.c, continueInVm);
         break;
+    }
     case IrCmd::CHECK_READONLY:
         build.cmp(byte[regOp(inst.a) + offsetof(Table, readonly)], 0);
         jumpOrAbortOnUndef(ConditionX64::NotEqual, ConditionX64::Equal, inst.b);
@@ -897,7 +906,20 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         build.mov(tmp.reg, sClosure);
         build.mov(tmp.reg, qword[tmp.reg + offsetof(Closure, env)]);
         build.cmp(byte[tmp.reg + offsetof(Table, safeenv)], 0);
-        jumpOrAbortOnUndef(ConditionX64::Equal, ConditionX64::NotEqual, inst.a);
+
+        if (inst.a.kind == IrOpKind::Undef)
+        {
+            Label skip;
+            build.jcc(ConditionX64::NotEqual, skip);
+            build.ud2();
+            build.setLabel(skip);
+        }
+        else
+        {
+            Label self;
+            build.jcc(ConditionX64::Equal, self);
+            exitHandlers.push_back({self, uintOp(inst.a)});
+        }
         break;
     }
     case IrCmd::CHECK_ARRAY_SIZE:
@@ -983,7 +1005,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         callStepGc(regs, build);
         break;
     case IrCmd::BARRIER_OBJ:
-        callBarrierObject(regs, build, regOp(inst.a), inst.a, vmRegOp(inst.b));
+        callBarrierObject(regs, build, regOp(inst.a), inst.a, vmRegOp(inst.b), inst.c.kind == IrOpKind::Undef ? -1 : tagOp(inst.c));
         break;
     case IrCmd::BARRIER_TABLE_BACK:
         callBarrierTableFast(regs, build, regOp(inst.a), inst.a);
@@ -993,7 +1015,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         Label skip;
 
         ScopedRegX64 tmp{regs, SizeX64::qword};
-        checkObjectBarrierConditions(build, tmp.reg, regOp(inst.a), vmRegOp(inst.b), skip);
+        checkObjectBarrierConditions(build, tmp.reg, regOp(inst.a), vmRegOp(inst.b), inst.c.kind == IrOpKind::Undef ? -1 : tagOp(inst.c), skip);
 
         {
             ScopedSpills spillGuard(regs);
@@ -1350,6 +1372,30 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         inst.regX64 = regs.takeReg(xmm0, index);
         break;
     }
+    case IrCmd::GET_TYPE:
+    {
+        inst.regX64 = regs.allocReg(SizeX64::qword, index);
+
+        build.mov(inst.regX64, qword[rState + offsetof(lua_State, global)]);
+
+        if (inst.a.kind == IrOpKind::Inst)
+            build.mov(inst.regX64, qword[inst.regX64 + qwordReg(regOp(inst.a)) * sizeof(TString*) + offsetof(global_State, ttname)]);
+        else if (inst.a.kind == IrOpKind::Constant)
+            build.mov(inst.regX64, qword[inst.regX64 + tagOp(inst.a) * sizeof(TString*) + offsetof(global_State, ttname)]);
+        else
+            LUAU_ASSERT(!"Unsupported instruction form");
+        break;
+    }
+    case IrCmd::GET_TYPEOF:
+    {
+        IrCallWrapperX64 callWrap(regs, build);
+        callWrap.addArgument(SizeX64::qword, rState);
+        callWrap.addArgument(SizeX64::qword, luauRegAddress(vmRegOp(inst.a)));
+        callWrap.call(qword[rNativeContext + offsetof(NativeContext, luaT_objtypenamestr)]);
+
+        inst.regX64 = regs.takeReg(rax, index);
+        break;
+    }
 
     // Pseudo instructions
     case IrCmd::NOP:
@@ -1376,9 +1422,19 @@ void IrLoweringX64::finishFunction()
     for (InterruptHandler& handler : interruptHandlers)
     {
         build.setLabel(handler.self);
-        build.mov(rax, handler.pcpos + 1);
+        build.mov(eax, handler.pcpos + 1);
         build.lea(rbx, handler.next);
         build.jmp(helpers.interrupt);
+    }
+
+    if (build.logText)
+        build.logAppend("; exit handlers\n");
+
+    for (ExitHandler& handler : exitHandlers)
+    {
+        build.setLabel(handler.self);
+        build.mov(edx, handler.pcpos * sizeof(Instruction));
+        build.jmp(helpers.updatePcAndContinueInVm);
     }
 }
 
@@ -1402,10 +1458,16 @@ void IrLoweringX64::jumpOrFallthrough(IrBlock& target, IrBlock& next)
         build.jmp(target.label);
 }
 
-void IrLoweringX64::jumpOrAbortOnUndef(ConditionX64 cond, ConditionX64 condInverse, IrOp targetOrUndef)
+void IrLoweringX64::jumpOrAbortOnUndef(ConditionX64 cond, ConditionX64 condInverse, IrOp targetOrUndef, bool continueInVm)
 {
     if (targetOrUndef.kind == IrOpKind::Undef)
     {
+        if (continueInVm)
+        {
+            build.jcc(cond, helpers.exitContinueVmClearNativeFlag);
+            return;
+        }
+
         Label skip;
         build.jcc(condInverse, skip);
         build.ud2();

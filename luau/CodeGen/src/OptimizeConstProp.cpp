@@ -441,17 +441,25 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             state.substituteOrRecordVmRegLoad(inst);
         break;
     case IrCmd::LOAD_DOUBLE:
-        if (IrOp value = state.tryGetValue(inst.a); value.kind == IrOpKind::Constant)
+    {
+        IrOp value = state.tryGetValue(inst.a);
+
+        if (function.asDoubleOp(value))
             substitute(function, inst, value);
         else if (inst.a.kind == IrOpKind::VmReg)
             state.substituteOrRecordVmRegLoad(inst);
         break;
+    }
     case IrCmd::LOAD_INT:
-        if (IrOp value = state.tryGetValue(inst.a); value.kind == IrOpKind::Constant)
+    {
+        IrOp value = state.tryGetValue(inst.a);
+
+        if (function.asIntOp(value))
             substitute(function, inst, value);
         else if (inst.a.kind == IrOpKind::VmReg)
             state.substituteOrRecordVmRegLoad(inst);
         break;
+    }
     case IrCmd::LOAD_TVALUE:
         if (inst.a.kind == IrOpKind::VmReg)
             state.substituteOrRecordVmRegLoad(inst);
@@ -732,6 +740,8 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
                 // If the written object is not collectable, barrier is not required
                 if (!isGCO(tag))
                     kill(function, inst);
+                else
+                    replace(function, inst.c, build.constTag(tag));
             }
         }
         break;
@@ -773,6 +783,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::JUMP_EQ_POINTER:
     case IrCmd::JUMP_SLOT_MATCH:
     case IrCmd::TABLE_LEN:
+    case IrCmd::STRING_LEN:
     case IrCmd::NEW_TABLE:
     case IrCmd::DUP_TABLE:
     case IrCmd::TRY_NUM_TO_INDEX:
@@ -820,6 +831,8 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::BITCOUNTLZ_UINT:
     case IrCmd::BITCOUNTRZ_UINT:
     case IrCmd::INVOKE_LIBM:
+    case IrCmd::GET_TYPE:
+    case IrCmd::GET_TYPEOF:
         break;
 
     case IrCmd::JUMP_CMP_ANY:

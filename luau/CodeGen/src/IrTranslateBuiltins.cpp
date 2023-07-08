@@ -344,8 +344,10 @@ static BuiltinImplResult translateBuiltinType(IrBuilder& build, int nparams, int
     if (nparams < 1 || nresults > 1)
         return {BuiltinImplType::None, -1};
 
-    build.inst(IrCmd::FASTCALL, build.constUint(LBF_TYPE), build.vmReg(ra), build.vmReg(arg), args, build.constInt(1), build.constInt(1));
+    IrOp tag = build.inst(IrCmd::LOAD_TAG, build.vmReg(arg));
+    IrOp name = build.inst(IrCmd::GET_TYPE, tag);
 
+    build.inst(IrCmd::STORE_POINTER, build.vmReg(ra), name);
     build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TSTRING));
 
     return {BuiltinImplType::UsesFallback, 1};
@@ -356,8 +358,9 @@ static BuiltinImplResult translateBuiltinTypeof(IrBuilder& build, int nparams, i
     if (nparams < 1 || nresults > 1)
         return {BuiltinImplType::None, -1};
 
-    build.inst(IrCmd::FASTCALL, build.constUint(LBF_TYPEOF), build.vmReg(ra), build.vmReg(arg), args, build.constInt(1), build.constInt(1));
+    IrOp name = build.inst(IrCmd::GET_TYPEOF, build.vmReg(arg));
 
+    build.inst(IrCmd::STORE_POINTER, build.vmReg(ra), name);
     build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TSTRING));
 
     return {BuiltinImplType::UsesFallback, 1};
@@ -734,6 +737,23 @@ static BuiltinImplResult translateBuiltinVector(IrBuilder& build, int nparams, i
     return {BuiltinImplType::UsesFallback, 1};
 }
 
+static BuiltinImplResult translateBuiltinStringLen(IrBuilder& build, int nparams, int ra, int arg, IrOp args, int nresults, IrOp fallback)
+{
+    if (nparams < 1 || nresults > 1)
+        return {BuiltinImplType::None, -1};
+
+    build.loadAndCheckTag(build.vmReg(arg), LUA_TSTRING, fallback);
+
+    IrOp ts = build.inst(IrCmd::LOAD_POINTER, build.vmReg(arg));
+
+    IrOp len = build.inst(IrCmd::STRING_LEN, ts);
+
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), build.inst(IrCmd::INT_TO_NUM, len));
+    build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TNUMBER));
+
+    return {BuiltinImplType::UsesFallback, 1};
+}
+
 BuiltinImplResult translateBuiltin(IrBuilder& build, int bfid, int ra, int arg, IrOp args, int nparams, int nresults, IrOp fallback)
 {
     // Builtins are not allowed to handle variadic arguments
@@ -818,6 +838,8 @@ BuiltinImplResult translateBuiltin(IrBuilder& build, int bfid, int ra, int arg, 
         return translateBuiltinTypeof(build, nparams, ra, arg, args, nresults, fallback);
     case LBF_VECTOR:
         return translateBuiltinVector(build, nparams, ra, arg, args, nresults, fallback);
+    case LBF_STRING_LEN:
+        return translateBuiltinStringLen(build, nparams, ra, arg, args, nresults, fallback);
     default:
         return {BuiltinImplType::None, -1};
     }

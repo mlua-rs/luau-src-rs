@@ -167,6 +167,7 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::ABS_NUM:
     case IrCmd::NOT_ANY:
     case IrCmd::TABLE_LEN:
+    case IrCmd::STRING_LEN:
     case IrCmd::NEW_TABLE:
     case IrCmd::DUP_TABLE:
     case IrCmd::TRY_NUM_TO_INDEX:
@@ -189,6 +190,8 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::BITCOUNTLZ_UINT:
     case IrCmd::BITCOUNTRZ_UINT:
     case IrCmd::INVOKE_LIBM:
+    case IrCmd::GET_TYPE:
+    case IrCmd::GET_TYPEOF:
         return true;
     default:
         break;
@@ -253,6 +256,9 @@ bool compare(double a, double b, IrCondition cond);
 void foldConstants(IrBuilder& build, IrFunction& function, IrBlock& block, uint32_t instIdx);
 
 uint32_t getNativeContextOffset(int bfid);
+
+// Cleans up blocks that were created with no users
+void killUnusedBlocks(IrFunction& function);
 
 } // namespace CodeGen
 } // namespace Luau

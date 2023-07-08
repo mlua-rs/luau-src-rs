@@ -5,6 +5,7 @@
 #include "Luau/IrCallWrapperX64.h"
 #include "Luau/IrData.h"
 #include "Luau/IrRegAllocX64.h"
+#include "Luau/IrUtils.h"
 
 #include "NativeState.h"
 
@@ -179,11 +180,15 @@ void callSetTable(IrRegAllocX64& regs, AssemblyBuilderX64& build, int rb, Operan
     emitUpdateBase(build);
 }
 
-void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, int ra, Label& skip)
+void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, int ra, int ratag, Label& skip)
 {
-    // iscollectable(ra)
-    build.cmp(luauRegTag(ra), LUA_TSTRING);
-    build.jcc(ConditionX64::Less, skip);
+    // Barrier should've been optimized away if we know that it's not collectable, checking for correctness
+    if (ratag == -1 || !isGCO(ratag))
+    {
+        // iscollectable(ra)
+        build.cmp(luauRegTag(ra), LUA_TSTRING);
+        build.jcc(ConditionX64::Less, skip);
+    }
 
     // isblack(obj2gco(o))
     build.test(byte[object + offsetof(GCheader, marked)], bitmask(BLACKBIT));
@@ -195,12 +200,12 @@ void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, Re
     build.jcc(ConditionX64::Zero, skip);
 }
 
-void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, int ra)
+void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, int ra, int ratag)
 {
     Label skip;
 
     ScopedRegX64 tmp{regs, SizeX64::qword};
-    checkObjectBarrierConditions(build, tmp.reg, object, ra, skip);
+    checkObjectBarrierConditions(build, tmp.reg, object, ra, ratag, skip);
 
     {
         ScopedSpills spillGuard(regs);
@@ -261,6 +266,13 @@ void callStepGc(IrRegAllocX64& regs, AssemblyBuilderX64& build)
     }
 
     build.setLabel(skip);
+}
+
+
+void emitClearNativeFlag(AssemblyBuilderX64& build)
+{
+    build.mov(rax, qword[rState + offsetof(lua_State, ci)]);
+    build.and_(dword[rax + offsetof(CallInfo, flags)], ~LUA_CALLINFO_NATIVE);
 }
 
 void emitExit(AssemblyBuilderX64& build, bool continueInVm)
@@ -338,6 +350,16 @@ void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, in
     callWrap.call(qword[rNativeContext + offset]);
 
     emitUpdateBase(build);
+}
+
+void emitUpdatePcAndContinueInVm(AssemblyBuilderX64& build)
+{
+    // edx = pcpos * sizeof(Instruction)
+    build.add(rdx, sCode);
+    build.mov(rax, qword[rState + offsetof(lua_State, ci)]);
+    build.mov(qword[rax + offsetof(CallInfo, savedpc)], rdx);
+
+    emitExit(build, /* continueInVm */ true);
 }
 
 void emitContinueCallInVm(AssemblyBuilderX64& build)
