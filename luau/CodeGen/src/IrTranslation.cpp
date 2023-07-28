@@ -514,7 +514,7 @@ void translateInstCloseUpvals(IrBuilder& build, const Instruction* pc)
     build.inst(IrCmd::CLOSE_UPVALS, build.vmReg(ra));
 }
 
-void translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool customParams, int customParamCount, IrOp customArgs, IrOp next)
+IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool customParams, int customParamCount, IrOp customArgs)
 {
     LuauOpcode opcode = LuauOpcode(LUAU_INSN_OP(*pc));
     int bfid = LUAU_INSN_A(*pc);
@@ -542,16 +542,25 @@ void translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
     // In unsafe environment, instead of retrying fastcall at 'pcpos' we side-exit directly to fallback sequence
-    build.inst(IrCmd::CHECK_SAFE_ENV, build.constUint(pcpos + getOpLength(opcode)));
+    build.inst(IrCmd::CHECK_SAFE_ENV, build.vmExit(pcpos + getOpLength(opcode)));
 
-    BuiltinImplResult br = translateBuiltin(build, LuauBuiltinFunction(bfid), ra, arg, builtinArgs, nparams, nresults, fallback);
+    BuiltinImplResult br =
+        translateBuiltin(build, LuauBuiltinFunction(bfid), ra, arg, builtinArgs, nparams, nresults, fallback, pcpos + getOpLength(opcode));
 
-    if (br.type == BuiltinImplType::UsesFallback)
+    if (br.type != BuiltinImplType::None)
     {
         LUAU_ASSERT(nparams != LUA_MULTRET && "builtins are not allowed to handle variadic arguments");
 
         if (nresults == LUA_MULTRET)
             build.inst(IrCmd::ADJUST_STACK_TO_REG, build.vmReg(ra), build.constInt(br.actualResultCount));
+
+        if (br.type != BuiltinImplType::UsesFallback)
+        {
+            // We ended up not using the fallback block, kill it
+            build.function.blockOp(fallback).kind = IrBlockKind::Dead;
+
+            return build.undef();
+        }
     }
     else
     {
@@ -568,10 +577,7 @@ void translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
             build.inst(IrCmd::ADJUST_STACK_TO_TOP);
     }
 
-    build.inst(IrCmd::JUMP, next);
-
-    // this will be filled with IR corresponding to instructions after FASTCALL until skip+1
-    build.beginBlock(fallback);
+    return fallback;
 }
 
 void translateInstForNPrep(IrBuilder& build, const Instruction* pc, int pcpos)
@@ -670,7 +676,7 @@ void translateInstForGPrepNext(IrBuilder& build, const Instruction* pc, int pcpo
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
     // fast-path: pairs/next
-    build.inst(IrCmd::CHECK_SAFE_ENV, build.constUint(pcpos));
+    build.inst(IrCmd::CHECK_SAFE_ENV, build.vmExit(pcpos));
     IrOp tagB = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
     build.inst(IrCmd::CHECK_TAG, tagB, build.constTag(LUA_TTABLE), fallback);
     IrOp tagC = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 2));
@@ -697,7 +703,7 @@ void translateInstForGPrepInext(IrBuilder& build, const Instruction* pc, int pcp
     IrOp finish = build.block(IrBlockKind::Internal);
 
     // fast-path: ipairs/inext
-    build.inst(IrCmd::CHECK_SAFE_ENV, build.constUint(pcpos));
+    build.inst(IrCmd::CHECK_SAFE_ENV, build.vmExit(pcpos));
     IrOp tagB = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
     build.inst(IrCmd::CHECK_TAG, tagB, build.constTag(LUA_TTABLE), fallback);
     IrOp tagC = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 2));
@@ -923,7 +929,7 @@ void translateInstGetImport(IrBuilder& build, const Instruction* pc, int pcpos)
     IrOp fastPath = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
-    build.inst(IrCmd::CHECK_SAFE_ENV, build.constUint(pcpos));
+    build.inst(IrCmd::CHECK_SAFE_ENV, build.vmExit(pcpos));
 
     // note: if import failed, k[] is nil; we could check this during codegen, but we instead use runtime fallback
     // this allows us to handle ahead-of-time codegen smoothly when an import fails to resolve at runtime
@@ -1205,6 +1211,62 @@ void translateInstOrX(IrBuilder& build, const Instruction* pc, int pcpos, IrOp c
 
         build.beginBlock(next);
     }
+}
+
+void translateInstNewClosure(IrBuilder& build, const Instruction* pc, int pcpos)
+{
+    LUAU_ASSERT(unsigned(LUAU_INSN_D(*pc)) < unsigned(build.function.proto->sizep));
+
+    int ra = LUAU_INSN_A(*pc);
+    Proto* pv = build.function.proto->p[LUAU_INSN_D(*pc)];
+
+    build.inst(IrCmd::SET_SAVEDPC, build.constUint(pcpos + 1));
+
+    IrOp env = build.inst(IrCmd::LOAD_ENV);
+    IrOp ncl = build.inst(IrCmd::NEWCLOSURE, build.constUint(pv->nups), env, build.constUint(LUAU_INSN_D(*pc)));
+
+    build.inst(IrCmd::STORE_POINTER, build.vmReg(ra), ncl);
+    build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TFUNCTION));
+
+    for (int ui = 0; ui < pv->nups; ++ui)
+    {
+        Instruction uinsn = pc[ui + 1];
+        LUAU_ASSERT(LUAU_INSN_OP(uinsn) == LOP_CAPTURE);
+
+        IrOp dst = build.inst(IrCmd::GET_CLOSURE_UPVAL_ADDR, ncl, build.vmUpvalue(ui));
+
+        switch (LUAU_INSN_A(uinsn))
+        {
+        case LCT_VAL:
+        {
+            IrOp src = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(LUAU_INSN_B(uinsn)));
+            build.inst(IrCmd::STORE_TVALUE, dst, src);
+            break;
+        }
+
+        case LCT_REF:
+        {
+            IrOp src = build.inst(IrCmd::FINDUPVAL, build.vmReg(LUAU_INSN_B(uinsn)));
+            build.inst(IrCmd::STORE_POINTER, dst, src);
+            build.inst(IrCmd::STORE_TAG, dst, build.constTag(LUA_TUPVAL));
+            break;
+        }
+
+        case LCT_UPVAL:
+        {
+            IrOp src = build.inst(IrCmd::GET_CLOSURE_UPVAL_ADDR, build.undef(), build.vmUpvalue(LUAU_INSN_B(uinsn)));
+            IrOp load = build.inst(IrCmd::LOAD_TVALUE, src);
+            build.inst(IrCmd::STORE_TVALUE, dst, load);
+            break;
+        }
+
+        default:
+            LUAU_ASSERT(!"Unknown upvalue capture type");
+            LUAU_UNREACHABLE(); // improves switch() codegen by eliding opcode bounds checks
+        }
+    }
+
+    build.inst(IrCmd::CHECK_GC);
 }
 
 } // namespace CodeGen

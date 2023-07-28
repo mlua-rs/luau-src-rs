@@ -141,14 +141,6 @@ static int onEnter(lua_State* L, Proto* proto)
     return GateFn(data->context.gateEntry)(L, proto, target, &data->context);
 }
 
-static void onSetBreakpoint(lua_State* L, Proto* proto, int instruction)
-{
-    if (!proto->execdata)
-        return;
-
-    LUAU_ASSERT(!"Native breakpoints are not implemented");
-}
-
 #if defined(__aarch64__)
 unsigned int getCpuFeaturesA64()
 {
@@ -245,10 +237,9 @@ void create(lua_State* L)
     ecb->close = onCloseState;
     ecb->destroy = onDestroyFunction;
     ecb->enter = onEnter;
-    ecb->setbreakpoint = onSetBreakpoint;
 }
 
-void compile(lua_State* L, int idx)
+void compile(lua_State* L, int idx, unsigned int flags)
 {
     LUAU_ASSERT(lua_isLfunction(L, idx));
     const TValue* func = luaA_toobject(L, idx);
@@ -258,14 +249,19 @@ void compile(lua_State* L, int idx)
     if (!data)
         return;
 
+    Proto* root = clvalue(func)->l.p;
+    if ((flags & CodeGen_OnlyNativeModules) != 0 && (root->flags & LPF_NATIVE_MODULE) == 0)
+        return;
+
+    std::vector<Proto*> protos;
+    gatherFunctions(protos, root);
+
 #if defined(__aarch64__)
-    A64::AssemblyBuilderA64 build(/* logText= */ false, getCpuFeaturesA64());
+    static unsigned int cpuFeatures = getCpuFeaturesA64();
+    A64::AssemblyBuilderA64 build(/* logText= */ false, cpuFeatures);
 #else
     X64::AssemblyBuilderX64 build(/* logText= */ false);
 #endif
-
-    std::vector<Proto*> protos;
-    gatherFunctions(protos, clvalue(func)->l.p);
 
     ModuleHelpers helpers;
 #if defined(__aarch64__)
