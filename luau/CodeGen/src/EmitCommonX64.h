@@ -160,7 +160,6 @@ inline void jumpIfTruthy(AssemblyBuilderX64& build, int ri, Label& target, Label
 }
 
 void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs, OperandX64 rhs, IrCondition cond, Label& label);
-void jumpOnAnyCmpFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb, IrCondition cond, Label& label);
 
 void getTableNodeAtCachedSlot(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 node, RegisterX64 table, int pcpos);
 void convertNumberToIndexOrJump(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 numd, RegisterX64 numi, Label& label);
@@ -181,7 +180,7 @@ void emitUpdateBase(AssemblyBuilderX64& build);
 void emitInterrupt(AssemblyBuilderX64& build);
 void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, int pcpos);
 
-void emitUpdatePcAndContinueInVm(AssemblyBuilderX64& build);
+void emitUpdatePcForExit(AssemblyBuilderX64& build);
 void emitContinueCallInVm(AssemblyBuilderX64& build);
 
 void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers);

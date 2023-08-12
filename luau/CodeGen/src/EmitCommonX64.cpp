@@ -66,29 +66,6 @@ void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs,
     }
 }
 
-void jumpOnAnyCmpFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb, IrCondition cond, Label& label)
-{
-    IrCallWrapperX64 callWrap(regs, build);
-    callWrap.addArgument(SizeX64::qword, rState);
-    callWrap.addArgument(SizeX64::qword, luauRegAddress(ra));
-    callWrap.addArgument(SizeX64::qword, luauRegAddress(rb));
-
-    if (cond == IrCondition::NotLessEqual || cond == IrCondition::LessEqual)
-        callWrap.call(qword[rNativeContext + offsetof(NativeContext, luaV_lessequal)]);
-    else if (cond == IrCondition::NotLess || cond == IrCondition::Less)
-        callWrap.call(qword[rNativeContext + offsetof(NativeContext, luaV_lessthan)]);
-    else if (cond == IrCondition::NotEqual || cond == IrCondition::Equal)
-        callWrap.call(qword[rNativeContext + offsetof(NativeContext, luaV_equalval)]);
-    else
-        LUAU_ASSERT(!"Unsupported condition");
-
-    emitUpdateBase(build);
-    build.test(eax, eax);
-    build.jcc(cond == IrCondition::NotLessEqual || cond == IrCondition::NotLess || cond == IrCondition::NotEqual ? ConditionX64::Zero
-                                                                                                                 : ConditionX64::NotZero,
-        label);
-}
-
 void getTableNodeAtCachedSlot(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 node, RegisterX64 table, int pcpos)
 {
     LUAU_ASSERT(tmp != node);
@@ -351,14 +328,12 @@ void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, in
     emitUpdateBase(build);
 }
 
-void emitUpdatePcAndContinueInVm(AssemblyBuilderX64& build)
+void emitUpdatePcForExit(AssemblyBuilderX64& build)
 {
     // edx = pcpos * sizeof(Instruction)
     build.add(rdx, sCode);
     build.mov(rax, qword[rState + offsetof(lua_State, ci)]);
     build.mov(qword[rax + offsetof(CallInfo, savedpc)], rdx);
-
-    emitExit(build, /* continueInVm */ true);
 }
 
 void emitContinueCallInVm(AssemblyBuilderX64& build)

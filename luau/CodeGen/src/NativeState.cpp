@@ -23,7 +23,12 @@ constexpr unsigned kBlockSize = 4 * 1024 * 1024;
 constexpr unsigned kMaxTotalSize = 256 * 1024 * 1024;
 
 NativeState::NativeState()
-    : codeAllocator(kBlockSize, kMaxTotalSize)
+    : NativeState(nullptr, nullptr)
+{
+}
+
+NativeState::NativeState(AllocationCallback* allocationCallback, void* allocationCallbackContext)
+    : codeAllocator{kBlockSize, kMaxTotalSize, allocationCallback, allocationCallbackContext}
 {
 }
 
@@ -101,7 +106,8 @@ void initFunctions(NativeState& data)
     data.context.executeNEWCLOSURE = executeNEWCLOSURE;
     data.context.executeNAMECALL = executeNAMECALL;
     data.context.executeFORGPREP = executeFORGPREP;
-    data.context.executeGETVARARGS = executeGETVARARGS;
+    data.context.executeGETVARARGSMultRet = executeGETVARARGSMultRet;
+    data.context.executeGETVARARGSConst = executeGETVARARGSConst;
     data.context.executeDUPCLOSURE = executeDUPCLOSURE;
     data.context.executePREPVARARGS = executePREPVARARGS;
     data.context.executeSETLIST = executeSETLIST;

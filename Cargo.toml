@@ -1,6 +1,6 @@
 [package]
 name = "luau0-src"
-version = "0.6.0+luau588"
+version = "0.7.0+luau590"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 edition = "2021"
 repository = "https://github.com/khvzak/luau-src-rs"
@@ -15,4 +15,4 @@ Minimal sources of Roblox Luau and logic to build them.
 members = ["testcrate"]
 
 [dependencies]
-cc = "1.0.72"
+cc = "1.0.82"
