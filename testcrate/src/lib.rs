@@ -1,7 +1,7 @@
 use std::os::raw::{c_char, c_int, c_long, c_void};
 
 #[repr(C)]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, non_camel_case_types)]
 pub struct lua_CompileOptions {
     optimizationLevel: c_int,
     debugLevel: c_int,
