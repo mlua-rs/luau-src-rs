@@ -124,10 +124,6 @@ impl Build {
             config.define("LUA_USE_LONGJMP", "1");
         }
 
-        if self.enable_codegen {
-            config.define("LUA_CUSTOM_EXECUTION", None);
-        }
-
         if cfg!(not(debug_assertions)) {
             config.define("NDEBUG", None);
             config.opt_level(2);
