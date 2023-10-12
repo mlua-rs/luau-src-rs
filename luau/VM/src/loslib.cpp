@@ -2,10 +2,14 @@
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
 #include "lualib.h"
 
+#include "lcommon.h"
+
 #include <string.h>
 #include <time.h>
 
 #define LUA_STRFTIMEOPTIONS "aAbBcdHIjmMpSUwWxXyYzZ%"
+
+LUAU_FASTFLAGVARIABLE(LuauOsTimegm, false)
 
 #if defined(_WIN32)
 static tm* gmtime_r(const time_t* timep, tm* result)
@@ -20,30 +24,48 @@ static tm* localtime_r(const time_t* timep, tm* result)
 
 static time_t timegm(struct tm* timep)
 {
+    LUAU_ASSERT(!FFlag::LuauOsTimegm);
+
     return _mkgmtime(timep);
 }
-#elif defined(__FreeBSD__)
-static tm* gmtime_r(const time_t* timep, tm* result)
-{
-    // Note: return is reversed from Windows (0 is success on Windows, but 0/null is failure elsewhere)
-    // Windows https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/gmtime-s-gmtime32-s-gmtime64-s?view=msvc-170#return-value
-    // Everyone else https://en.cppreference.com/w/c/chrono/gmtime
-    return gmtime_s(timep, result);
-}
-
-static tm* localtime_r(const time_t* timep, tm* result)
-{
-    // Note: return is reversed from Windows (0 is success on Windows, but 0/null is failure elsewhere)
-    // Windows https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/localtime-s-localtime32-s-localtime64-s?view=msvc-170#return-value
-    // Everyone else https://en.cppreference.com/w/c/chrono/localtime
-    return localtime_s(timep, result);
-}
-
-static time_t timegm(struct tm* timep)
-{
-    return mktime(timep);
-}
 #endif
+
+static time_t os_timegm(struct tm* timep)
+{
+    LUAU_ASSERT(FFlag::LuauOsTimegm);
+
+    // Julian day number calculation
+    int day = timep->tm_mday;
+    int month = timep->tm_mon + 1;
+    int year = timep->tm_year + 1900;
+
+    // year adjustment, pretend that it starts in March
+    int a = timep->tm_mon % 12 < 2 ? 1 : 0;
+
+    // also adjust for out-of-range month numbers in input
+    a -= timep->tm_mon / 12;
+
+    int y = year + 4800 - a;
+    int m = month + (12 * a) - 3;
+
+    int julianday = day + ((153 * m + 2) / 5) + (365 * y) + (y / 4) - (y / 100) + (y / 400) - 32045;
+
+    const int utcstartasjulianday = 2440588;                              // Jan 1st 1970 offset in Julian calendar
+    const int64_t utcstartasjuliansecond = utcstartasjulianday * 86400ll; // same in seconds
+
+    // fail the dates before UTC start
+    if (julianday < utcstartasjulianday)
+        return time_t(-1);
+
+    int64_t daysecond = timep->tm_hour * 3600ll + timep->tm_min * 60ll + timep->tm_sec;
+    int64_t julianseconds = int64_t(julianday) * 86400ull + daysecond;
+
+    if (julianseconds < utcstartasjuliansecond)
+        return time_t(-1);
+
+    int64_t utc = julianseconds - utcstartasjuliansecond;
+    return time_t(utc);
+}
 
 static int os_clock(lua_State* L)
 {
@@ -184,7 +206,10 @@ static int os_time(lua_State* L)
         ts.tm_isdst = getboolfield(L, "isdst");
 
         // Note: upstream Lua uses mktime() here which assumes input is local time, but we prefer UTC for consistency
-        t = timegm(&ts);
+        if (FFlag::LuauOsTimegm)
+            t = os_timegm(&ts);
+        else
+            t = timegm(&ts);
     }
     if (t == (time_t)(-1))
         lua_pushnil(L);
