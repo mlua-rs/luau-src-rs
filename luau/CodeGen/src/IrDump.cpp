@@ -61,6 +61,8 @@ static const char* getTagName(uint8_t tag)
         return "tuserdata";
     case LUA_TTHREAD:
         return "tthread";
+    case LUA_TBUFFER:
+        return "tbuffer";
     case LUA_TPROTO:
         return "tproto";
     case LUA_TUPVAL:
@@ -163,6 +165,8 @@ const char* getCmdName(IrCmd cmd)
         return "JUMP_EQ_POINTER";
     case IrCmd::JUMP_CMP_NUM:
         return "JUMP_CMP_NUM";
+    case IrCmd::JUMP_FORN_LOOP_COND:
+        return "JUMP_FORN_LOOP_COND";
     case IrCmd::JUMP_SLOT_MATCH:
         return "JUMP_SLOT_MATCH";
     case IrCmd::TABLE_LEN:

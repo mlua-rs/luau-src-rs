@@ -541,6 +541,19 @@ void AssemblyBuilderX64::bsf(RegisterX64 dst, OperandX64 src)
     commit();
 }
 
+void AssemblyBuilderX64::bswap(RegisterX64 dst)
+{
+    if (logText)
+        log("bswap", dst);
+
+    LUAU_ASSERT(dst.size == SizeX64::dword || dst.size == SizeX64::qword);
+
+    placeRex(dst);
+    place(0x0f);
+    place(OP_PLUS_REG(0xc8, dst.index));
+    commit();
+}
+
 void AssemblyBuilderX64::nop(uint32_t length)
 {
     while (length != 0)
@@ -1551,11 +1564,16 @@ void AssemblyBuilderX64::log(OperandX64 op)
     case CategoryX64::mem:
         if (op.base == rip)
         {
-            logAppend("%s ptr [.start%+d]", getSizeName(op.memSize), op.imm);
+            if (op.memSize != SizeX64::none)
+                logAppend("%s ptr ", getSizeName(op.memSize));
+            logAppend("[.start%+d]", op.imm);
             return;
         }
 
-        logAppend("%s ptr [", getSizeName(op.memSize));
+        if (op.memSize != SizeX64::none)
+            logAppend("%s ptr ", getSizeName(op.memSize));
+
+        logAppend("[");
 
         if (op.base != noreg)
             logAppend("%s", getRegisterName(op.base));
