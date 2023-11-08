@@ -26,9 +26,8 @@ LUAU_FASTINTVARIABLE(LuauCompileInlineThreshold, 25)
 LUAU_FASTINTVARIABLE(LuauCompileInlineThresholdMaxBoost, 300)
 LUAU_FASTINTVARIABLE(LuauCompileInlineDepth, 5)
 
-LUAU_FASTFLAG(LuauFloorDivision)
-LUAU_FASTFLAGVARIABLE(LuauCompileFixContinueValidation2, false)
-LUAU_FASTFLAGVARIABLE(LuauCompileIfElseAndOr, false)
+LUAU_FASTFLAGVARIABLE(LuauCompileSideEffects, false)
+LUAU_FASTFLAGVARIABLE(LuauCompileDeadIf, false)
 
 namespace Luau
 {
@@ -261,7 +260,7 @@ struct Compiler
         if (bytecode.getInstructionCount() > kMaxInstructionCount)
             CompileError::raise(func->location, "Exceeded function instruction limit; split the function into parts to compile");
 
-        // since top-level code only executes once, it can be marked as cold if it has no loops (top-level code with loops might be profitable to compile natively)
+        // top-level code only executes once so it can be marked as cold if it has no loops; code with loops might be profitable to compile natively
         if (func->functionDepth == 0 && !hasLoops)
             protoflags |= LPF_NATIVE_COLD;
 
@@ -645,10 +644,7 @@ struct Compiler
 
         // evaluate extra expressions for side effects
         for (size_t i = func->args.size; i < expr->args.size; ++i)
-        {
-            RegScope rsi(this);
-            compileExprAuto(expr->args.data[i], rsi);
-        }
+            compileExprSide(expr->args.data[i]);
 
         // apply all evaluated arguments to the compiler state
         // note: locals use current startpc for debug info, although some of them have been computed earlier; this is similar to compileStatLocal
@@ -1039,8 +1035,6 @@ struct Compiler
             return k ? LOP_DIVK : LOP_DIV;
 
         case AstExprBinary::FloorDiv:
-            LUAU_ASSERT(FFlag::LuauFloorDivision);
-
             return k ? LOP_IDIVK : LOP_IDIV;
 
         case AstExprBinary::Mod:
@@ -1497,8 +1491,6 @@ struct Compiler
         case AstExprBinary::Mod:
         case AstExprBinary::Pow:
         {
-            LUAU_ASSERT(FFlag::LuauFloorDivision || expr->op != AstExprBinary::FloorDiv);
-
             int32_t rc = getConstantNumber(expr->right);
 
             if (rc >= 0 && rc <= 255)
@@ -1597,18 +1589,15 @@ struct Compiler
         }
         else
         {
-            if (FFlag::LuauCompileIfElseAndOr)
+            // Optimization: convert some if..then..else expressions into and/or when the other side has no side effects and is very cheap to compute
+            // if v then v else e => v or e
+            // if v then e else v => v and e
+            if (int creg = getExprLocalReg(expr->condition); creg >= 0)
             {
-                // Optimization: convert some if..then..else expressions into and/or when the other side has no side effects and is very cheap to compute
-                // if v then v else e => v or e
-                // if v then e else v => v and e
-                if (int creg = getExprLocalReg(expr->condition); creg >= 0)
-                {
-                    if (creg == getExprLocalReg(expr->trueExpr) && (getExprLocalReg(expr->falseExpr) >= 0 || isConstant(expr->falseExpr)))
-                        return compileExprIfElseAndOr(/* and_= */ false, uint8_t(creg), expr->falseExpr, target);
-                    else if (creg == getExprLocalReg(expr->falseExpr) && (getExprLocalReg(expr->trueExpr) >= 0 || isConstant(expr->trueExpr)))
-                        return compileExprIfElseAndOr(/* and_= */ true, uint8_t(creg), expr->trueExpr, target);
-                }
+                if (creg == getExprLocalReg(expr->trueExpr) && (getExprLocalReg(expr->falseExpr) >= 0 || isConstant(expr->falseExpr)))
+                    return compileExprIfElseAndOr(/* and_= */ false, uint8_t(creg), expr->falseExpr, target);
+                else if (creg == getExprLocalReg(expr->falseExpr) && (getExprLocalReg(expr->trueExpr) >= 0 || isConstant(expr->trueExpr)))
+                    return compileExprIfElseAndOr(/* and_= */ true, uint8_t(creg), expr->trueExpr, target);
             }
 
             std::vector<size_t> elseJump;
@@ -2216,6 +2205,23 @@ struct Compiler
         return reg;
     }
 
+    void compileExprSide(AstExpr* node)
+    {
+        if (FFlag::LuauCompileSideEffects)
+        {
+            // Optimization: some expressions never carry side effects so we don't need to emit any code
+            if (node->is<AstExprLocal>() || node->is<AstExprGlobal>() || node->is<AstExprVarargs>() || node->is<AstExprFunction>() || isConstant(node))
+                return;
+
+            // note: the remark is omitted for calls as it's fairly noisy due to inlining
+            if (!node->is<AstExprCall>())
+                bytecode.addDebugRemark("expression only compiled for side effects");
+        }
+
+        RegScope rsi(this);
+        compileExprAuto(node, rsi);
+    }
+
     // initializes target..target+targetCount-1 range using expression
     // if expression is a call/vararg, we assume it returns all values, otherwise we fill the rest with nil
     // assumes target register range can be clobbered and is at the top of the register space if targetTop = true
@@ -2264,10 +2270,7 @@ struct Compiler
 
             // evaluate extra expressions for side effects
             for (size_t i = targetCount; i < list.size; ++i)
-            {
-                RegScope rsi(this);
-                compileExprAuto(list.data[i], rsi);
-            }
+                compileExprSide(list.data[i]);
         }
         else if (list.size > 0)
         {
@@ -2502,6 +2505,18 @@ struct Compiler
             return;
         }
 
+        // Optimization: condition is always false but isn't a constant => we only need the else body and condition's side effects
+        if (FFlag::LuauCompileDeadIf)
+        {
+            if (AstExprBinary* cand = stat->condition->as<AstExprBinary>(); cand && cand->op == AstExprBinary::And && isConstantFalse(cand->right))
+            {
+                compileExprSide(cand->left);
+                if (stat->elsebody)
+                    compileStat(stat->elsebody);
+                return;
+            }
+        }
+
         // Optimization: body is a "break" statement with no "else" => we can directly break out of the loop in "then" case
         if (!stat->elsebody && isStatBreak(stat->thenbody) && !areLocalsCaptured(loops.back().localOffset))
         {
@@ -2519,14 +2534,9 @@ struct Compiler
         // Optimization: body is a "continue" statement with no "else" => we can directly continue in "then" case
         if (!stat->elsebody && continueStatement != nullptr && !areLocalsCaptured(loops.back().localOffsetContinue))
         {
-            if (FFlag::LuauCompileFixContinueValidation2)
-            {
-                // track continue statement for repeat..until validation (validateContinueUntil)
-                if (!loops.back().continueUsed)
-                    loops.back().continueUsed = continueStatement;
-            }
-            else if (loops.back().untilCondition)
-                validateContinueUntil(continueStatement, loops.back().untilCondition);
+            // track continue statement for repeat..until validation (validateContinueUntil)
+            if (!loops.back().continueUsed)
+                loops.back().continueUsed = continueStatement;
 
             // fallthrough = proceed with the loop body as usual
             std::vector<size_t> elseJump;
@@ -2587,7 +2597,7 @@ struct Compiler
         size_t oldJumps = loopJumps.size();
         size_t oldLocals = localStack.size();
 
-        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr});
         hasLoops = true;
 
         size_t loopLabel = bytecode.emitLabel();
@@ -2623,7 +2633,7 @@ struct Compiler
         size_t oldJumps = loopJumps.size();
         size_t oldLocals = localStack.size();
 
-        loops.push_back({oldLocals, oldLocals, stat->condition, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr});
         hasLoops = true;
 
         size_t loopLabel = bytecode.emitLabel();
@@ -2646,9 +2656,9 @@ struct Compiler
             // expression that continue will jump to.
             loops.back().localOffsetContinue = localStack.size();
 
-            // if continue was called from this statement, then any local defined after this in the loop body should not be accessed by until condition
+            // if continue was called from this statement, any local defined after this in the loop body should not be accessed by until condition
             // it is sufficient to check this condition once, as if this holds for the first continue, it must hold for all subsequent continues.
-            if (FFlag::LuauCompileFixContinueValidation2 && loops.back().continueUsed && !continueValidated)
+            if (loops.back().continueUsed && !continueValidated)
             {
                 validateContinueUntil(loops.back().continueUsed, stat->condition, body, i + 1);
                 continueValidated = true;
@@ -2870,7 +2880,7 @@ struct Compiler
         size_t oldLocals = localStack.size();
         size_t oldJumps = loopJumps.size();
 
-        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr});
 
         for (int iv = 0; iv < tripCount; ++iv)
         {
@@ -2921,7 +2931,7 @@ struct Compiler
         size_t oldLocals = localStack.size();
         size_t oldJumps = loopJumps.size();
 
-        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr});
         hasLoops = true;
 
         // register layout: limit, step, index
@@ -2986,7 +2996,7 @@ struct Compiler
         size_t oldLocals = localStack.size();
         size_t oldJumps = loopJumps.size();
 
-        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr});
         hasLoops = true;
 
         // register layout: generator, state, index, variables...
@@ -3236,10 +3246,7 @@ struct Compiler
 
         // compute expressions with side effects
         for (size_t i = stat->vars.size; i < stat->values.size; ++i)
-        {
-            RegScope rsi(this);
-            compileExprAuto(stat->values.data[i], rsi);
-        }
+            compileExprSide(stat->values.data[i]);
 
         // almost done... let's assign everything left to right, noting that locals were either written-to directly, or will be written-to in a
         // separate pass to avoid conflicts
@@ -3282,8 +3289,6 @@ struct Compiler
         case AstExprBinary::Mod:
         case AstExprBinary::Pow:
         {
-            LUAU_ASSERT(FFlag::LuauFloorDivision || stat->op != AstExprBinary::FloorDiv);
-
             if (var.kind != LValue::Kind_Local)
                 compileLValueUse(var, target, /* set= */ false);
 
@@ -3398,14 +3403,9 @@ struct Compiler
         {
             LUAU_ASSERT(!loops.empty());
 
-            if (FFlag::LuauCompileFixContinueValidation2)
-            {
-                // track continue statement for repeat..until validation (validateContinueUntil)
-                if (!loops.back().continueUsed)
-                    loops.back().continueUsed = stat;
-            }
-            else if (loops.back().untilCondition)
-                validateContinueUntil(stat, loops.back().untilCondition);
+            // track continue statement for repeat..until validation (validateContinueUntil)
+            if (!loops.back().continueUsed)
+                loops.back().continueUsed = stat;
 
             // before continuing, we need to close all local variables that were captured in closures since loop start
             // normally they are closed by the enclosing blocks, including the loop block, but we're skipping that here
@@ -3436,8 +3436,7 @@ struct Compiler
             }
             else
             {
-                RegScope rs(this);
-                compileExprAuto(stat->expr, rs);
+                compileExprSide(stat->expr);
             }
         }
         else if (AstStatLocal* stat = node->as<AstStatLocal>())
@@ -3488,21 +3487,8 @@ struct Compiler
         }
     }
 
-    void validateContinueUntil(AstStat* cont, AstExpr* condition)
-    {
-        LUAU_ASSERT(!FFlag::LuauCompileFixContinueValidation2);
-        UndefinedLocalVisitor visitor(this);
-        condition->visit(&visitor);
-
-        if (visitor.undef)
-            CompileError::raise(condition->location,
-                "Local %s used in the repeat..until condition is undefined because continue statement on line %d jumps over it",
-                visitor.undef->name.value, cont->location.begin.line + 1);
-    }
-
     void validateContinueUntil(AstStat* cont, AstExpr* condition, AstStatBlock* body, size_t start)
     {
-        LUAU_ASSERT(FFlag::LuauCompileFixContinueValidation2);
         UndefinedLocalVisitor visitor(this);
 
         for (size_t i = start; i < body->body.size; ++i)
@@ -3748,18 +3734,8 @@ struct Compiler
 
         void check(AstLocal* local)
         {
-            if (FFlag::LuauCompileFixContinueValidation2)
-            {
-                if (!undef && locals.contains(local))
-                    undef = local;
-            }
-            else
-            {
-                Local& l = self->locals[local];
-
-                if (!l.allocated && !undef)
-                    undef = local;
-            }
+            if (!undef && locals.contains(local))
+                undef = local;
         }
 
         bool visit(AstExprLocal* node) override
@@ -3903,9 +3879,6 @@ struct Compiler
     {
         size_t localOffset;
         size_t localOffsetContinue;
-
-        // TODO: Remove with LuauCompileFixContinueValidation2
-        AstExpr* untilCondition;
 
         AstStatContinue* continueUsed;
     };
