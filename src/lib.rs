@@ -114,6 +114,7 @@ impl Build {
             .cargo_metadata(false)
             .flag_if_supported("-std=c++17")
             .flag_if_supported("/std:c++17") // MSVC
+            .flag("-fexceptions")
             .cpp(true);
 
         // Common defines

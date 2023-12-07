@@ -38,8 +38,11 @@ extern "C" {
         env: c_int,
     ) -> c_int;
 
+    #[cfg(not(target_os = "emscripten"))]
     pub fn luau_codegen_supported() -> c_int;
+    #[cfg(not(target_os = "emscripten"))]
     pub fn luau_codegen_create(state: *mut c_void);
+    #[cfg(not(target_os = "emscripten"))]
     pub fn luau_codegen_compile(state: *mut c_void, idx: c_int);
 }
 
@@ -54,6 +57,7 @@ fn luau_works() {
         let state = luaL_newstate();
         assert!(state != ptr::null_mut());
 
+        #[cfg(not(target_os = "emscripten"))]
         // Enable JIT if supported
         if luau_codegen_supported() != 0 {
             luau_codegen_create(state);
@@ -82,6 +86,7 @@ fn luau_works() {
         assert_eq!(result, 0);
         free(bytecode.cast());
 
+        #[cfg(not(target_os = "emscripten"))]
         // Compile the function (JIT, if supported)
         if luau_codegen_supported() != 0 {
             luau_codegen_compile(state, -1);
