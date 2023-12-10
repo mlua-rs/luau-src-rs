@@ -116,6 +116,12 @@ impl Build {
             .flag_if_supported("/std:c++17") // MSVC
             .cpp(true);
 
+        if target.ends_with("emscripten") {
+            // Enable c++ exceptions for emscripten (it's disabled by default)
+            // Later we should switch to wasm exceptions
+            config.flag_if_supported("-fexceptions");
+        }
+
         // Common defines
         config.define("LUAI_MAXCSTACK", &*self.max_cstack_size.to_string());
         config.define("LUA_VECTOR_SIZE", &*self.vector_size.to_string());
@@ -144,6 +150,10 @@ impl Build {
         // Build CogeGen
         let codegen_lib_name = "luaucodegen";
         if self.enable_codegen {
+            if target.ends_with("emscripten") {
+                panic!("codegen (jit) is not supported on emscripten");
+            }
+
             config
                 .clone()
                 .include(&codegen_include_dir)
