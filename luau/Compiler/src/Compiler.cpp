@@ -26,8 +26,7 @@ LUAU_FASTINTVARIABLE(LuauCompileInlineThreshold, 25)
 LUAU_FASTINTVARIABLE(LuauCompileInlineThresholdMaxBoost, 300)
 LUAU_FASTINTVARIABLE(LuauCompileInlineDepth, 5)
 
-LUAU_FASTFLAGVARIABLE(LuauCompileSideEffects, false)
-LUAU_FASTFLAGVARIABLE(LuauCompileDeadIf, false)
+LUAU_FASTFLAGVARIABLE(LuauCompileRevK, false)
 
 namespace Luau
 {
@@ -1516,6 +1515,20 @@ struct Compiler
             }
             else
             {
+                if (FFlag::LuauCompileRevK && (expr->op == AstExprBinary::Sub || expr->op == AstExprBinary::Div))
+                {
+                    int32_t lc = getConstantNumber(expr->left);
+
+                    if (lc >= 0 && lc <= 255)
+                    {
+                        uint8_t rr = compileExprAuto(expr->right, rs);
+                        LuauOpcode op = (expr->op == AstExprBinary::Sub) ? LOP_SUBRK : LOP_DIVRK;
+
+                        bytecode.emitABC(op, target, uint8_t(lc), uint8_t(rr));
+                        return;
+                    }
+                }
+
                 uint8_t rl = compileExprAuto(expr->left, rs);
                 uint8_t rr = compileExprAuto(expr->right, rs);
 
@@ -2229,16 +2242,13 @@ struct Compiler
 
     void compileExprSide(AstExpr* node)
     {
-        if (FFlag::LuauCompileSideEffects)
-        {
-            // Optimization: some expressions never carry side effects so we don't need to emit any code
-            if (node->is<AstExprLocal>() || node->is<AstExprGlobal>() || node->is<AstExprVarargs>() || node->is<AstExprFunction>() || isConstant(node))
-                return;
+        // Optimization: some expressions never carry side effects so we don't need to emit any code
+        if (node->is<AstExprLocal>() || node->is<AstExprGlobal>() || node->is<AstExprVarargs>() || node->is<AstExprFunction>() || isConstant(node))
+            return;
 
-            // note: the remark is omitted for calls as it's fairly noisy due to inlining
-            if (!node->is<AstExprCall>())
-                bytecode.addDebugRemark("expression only compiled for side effects");
-        }
+        // note: the remark is omitted for calls as it's fairly noisy due to inlining
+        if (!node->is<AstExprCall>())
+            bytecode.addDebugRemark("expression only compiled for side effects");
 
         RegScope rsi(this);
         compileExprAuto(node, rsi);
@@ -2528,15 +2538,12 @@ struct Compiler
         }
 
         // Optimization: condition is always false but isn't a constant => we only need the else body and condition's side effects
-        if (FFlag::LuauCompileDeadIf)
+        if (AstExprBinary* cand = stat->condition->as<AstExprBinary>(); cand && cand->op == AstExprBinary::And && isConstantFalse(cand->right))
         {
-            if (AstExprBinary* cand = stat->condition->as<AstExprBinary>(); cand && cand->op == AstExprBinary::And && isConstantFalse(cand->right))
-            {
-                compileExprSide(cand->left);
-                if (stat->elsebody)
-                    compileStat(stat->elsebody);
-                return;
-            }
+            compileExprSide(cand->left);
+            if (stat->elsebody)
+                compileStat(stat->elsebody);
+            return;
         }
 
         // Optimization: body is a "break" statement with no "else" => we can directly break out of the loop in "then" case
