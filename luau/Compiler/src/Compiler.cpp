@@ -995,7 +995,9 @@ struct Compiler
             bytecode.emitAD(LOP_NEWCLOSURE, target, pid);
 
         for (const Capture& c : captures)
+        {
             bytecode.emitABC(LOP_CAPTURE, uint8_t(c.type), c.data, 0);
+        }
     }
 
     LuauOpcode getUnaryOp(AstExprUnary::Op op)

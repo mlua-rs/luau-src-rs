@@ -80,9 +80,7 @@
         } \
     }
 
-
 #define VM_DISPATCH_OP(op) &&CASE_##op
-
 
 #define VM_DISPATCH_TABLE() \
     VM_DISPATCH_OP(LOP_NOP), VM_DISPATCH_OP(LOP_BREAK), VM_DISPATCH_OP(LOP_LOADNIL), VM_DISPATCH_OP(LOP_LOADB), VM_DISPATCH_OP(LOP_LOADN), \
@@ -134,6 +132,8 @@
 
 // Does VM support native execution via ExecutionCallbacks? We mostly assume it does but keep the define to make it easy to quantify the cost.
 #define VM_HAS_NATIVE 1
+
+LUAU_FASTFLAGVARIABLE(LuauTaggedLuData, false)
 
 LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
 {
@@ -1110,7 +1110,9 @@ reentry:
                         VM_NEXT();
 
                     case LUA_TLIGHTUSERDATA:
-                        pc += pvalue(ra) == pvalue(rb) ? LUAU_INSN_D(insn) : 1;
+                        pc += (pvalue(ra) == pvalue(rb) && (!FFlag::LuauTaggedLuData || lightuserdatatag(ra) == lightuserdatatag(rb)))
+                                  ? LUAU_INSN_D(insn)
+                                  : 1;
                         LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
                         VM_NEXT();
 
@@ -1225,7 +1227,9 @@ reentry:
                         VM_NEXT();
 
                     case LUA_TLIGHTUSERDATA:
-                        pc += pvalue(ra) != pvalue(rb) ? LUAU_INSN_D(insn) : 1;
+                        pc += (pvalue(ra) != pvalue(rb) || (FFlag::LuauTaggedLuData && lightuserdatatag(ra) != lightuserdatatag(rb)))
+                                  ? LUAU_INSN_D(insn)
+                                  : 1;
                         LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
                         VM_NEXT();
 
@@ -2296,7 +2300,7 @@ reentry:
                     {
                         // set up registers for builtin iteration
                         setobj2s(L, ra + 1, ra);
-                        setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(0)));
+                        setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(0)), LU_TAG_ITERATOR);
                         setnilvalue(ra);
                     }
                     else
@@ -2348,7 +2352,7 @@ reentry:
 
                         if (!ttisnil(e))
                         {
-                            setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(index + 1)));
+                            setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(index + 1)), LU_TAG_ITERATOR);
                             setnvalue(ra + 3, double(index + 1));
                             setobj2s(L, ra + 4, e);
 
@@ -2369,7 +2373,7 @@ reentry:
 
                         if (!ttisnil(gval(n)))
                         {
-                            setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(index + 1)));
+                            setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(index + 1)), LU_TAG_ITERATOR);
                             getnodekey(L, ra + 3, n);
                             setobj2s(L, ra + 4, gval(n));
 
@@ -2421,7 +2425,7 @@ reentry:
                 {
                     setnilvalue(ra);
                     // ra+1 is already the table
-                    setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(0)));
+                    setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(0)), LU_TAG_ITERATOR);
                 }
                 else if (!ttisfunction(ra))
                 {
@@ -2450,7 +2454,7 @@ reentry:
                 {
                     setnilvalue(ra);
                     // ra+1 is already the table
-                    setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(0)));
+                    setpvalue(ra + 2, reinterpret_cast<void*>(uintptr_t(0)), LU_TAG_ITERATOR);
                 }
                 else if (!ttisfunction(ra))
                 {

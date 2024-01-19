@@ -76,6 +76,11 @@ struct AssemblyOptions
     bool includeIr = false;
     bool includeOutlinedCode = false;
 
+    bool includeIrPrefix = true; // "#" before IR blocks and instructions
+    bool includeUseInfo = true;
+    bool includeCfgInfo = true;
+    bool includeRegFlowInfo = true;
+
     // Optional annotator function can be provided to describe each instruction, it takes function id and sequential instruction id
     AnnotatorFn annotator = nullptr;
     void* annotatorContext = nullptr;
@@ -102,6 +107,14 @@ struct BlockLinearizationStats
     }
 };
 
+enum FunctionStatsFlags
+{
+    // Enable stats collection per function
+    FunctionStats_Enable = 1 << 0,
+    // Compute function bytecode summary
+    FunctionStats_BytecodeSummary = 1 << 1,
+};
+
 struct FunctionStats
 {
     std::string name;
@@ -109,6 +122,8 @@ struct FunctionStats
     unsigned bcodeCount = 0;
     unsigned irCount = 0;
     unsigned asmCount = 0;
+    unsigned asmSize = 0;
+    std::vector<std::vector<unsigned>> bytecodeSummary;
 };
 
 struct LoweringStats
@@ -127,7 +142,7 @@ struct LoweringStats
 
     BlockLinearizationStats blockLinearizationStats;
 
-    bool collectFunctionStats = false;
+    unsigned functionStatsFlags = 0;
     std::vector<FunctionStats> functions;
 
     LoweringStats operator+(const LoweringStats& other) const
@@ -150,7 +165,7 @@ struct LoweringStats
         this->regAllocErrors += that.regAllocErrors;
         this->loweringErrors += that.loweringErrors;
         this->blockLinearizationStats += that.blockLinearizationStats;
-        if (this->collectFunctionStats)
+        if (this->functionStatsFlags & FunctionStats_Enable)
             this->functions.insert(this->functions.end(), that.functions.begin(), that.functions.end());
         return *this;
     }
