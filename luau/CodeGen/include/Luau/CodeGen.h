@@ -2,6 +2,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,6 +42,26 @@ enum class CodeGenCompilationResult
     AllocationFailed = 9,                     // Native codegen failed due to an allocation error
 };
 
+struct ProtoCompilationFailure
+{
+    CodeGenCompilationResult result = CodeGenCompilationResult::Success;
+
+    std::string debugname;
+    int line = -1;
+};
+
+struct CompilationResult
+{
+    CodeGenCompilationResult result = CodeGenCompilationResult::Success;
+
+    std::vector<ProtoCompilationFailure> protoFailures;
+
+    [[nodiscard]] bool hasErrors() const
+    {
+        return result != CodeGenCompilationResult::Success || !protoFailures.empty();
+    }
+};
+
 struct CompilationStats
 {
     size_t bytecodeSizeBytes = 0;
@@ -49,14 +71,39 @@ struct CompilationStats
 
     uint32_t functionsTotal = 0;
     uint32_t functionsCompiled = 0;
+    uint32_t functionsBound = 0;
 };
 
 using AllocationCallback = void(void* context, void* oldPointer, size_t oldSize, void* newPointer, size_t newSize);
 
 bool isSupported();
 
+class SharedCodeGenContext;
+
+struct SharedCodeGenContextDeleter
+{
+    void operator()(const SharedCodeGenContext* context) const noexcept;
+};
+
+using UniqueSharedCodeGenContext = std::unique_ptr<SharedCodeGenContext, SharedCodeGenContextDeleter>;
+
+// Creates a new SharedCodeGenContext that can be used by multiple Luau VMs
+// concurrently, using either the default allocator parameters or custom
+// allocator parameters.
+[[nodiscard]] UniqueSharedCodeGenContext createSharedCodeGenContext();
+
+[[nodiscard]] UniqueSharedCodeGenContext createSharedCodeGenContext(AllocationCallback* allocationCallback, void* allocationCallbackContext);
+
+[[nodiscard]] UniqueSharedCodeGenContext createSharedCodeGenContext(
+    size_t blockSize, size_t maxTotalSize, AllocationCallback* allocationCallback, void* allocationCallbackContext);
+
+// Destroys the provided SharedCodeGenContext.  All Luau VMs using the
+// SharedCodeGenContext must be destroyed before this function is called.
+void destroySharedCodeGenContext(const SharedCodeGenContext* codeGenContext) noexcept;
+
 void create(lua_State* L, AllocationCallback* allocationCallback, void* allocationCallbackContext);
 void create(lua_State* L);
+void create(lua_State* L, SharedCodeGenContext* codeGenContext);
 
 // Check if native execution is enabled
 [[nodiscard]] bool isNativeExecutionEnabled(lua_State* L);
@@ -64,8 +111,12 @@ void create(lua_State* L);
 // Enable or disable native execution according to `enabled` argument
 void setNativeExecutionEnabled(lua_State* L, bool enabled);
 
+using ModuleId = std::array<uint8_t, 16>;
+
 // Builds target function and all inner functions
-CodeGenCompilationResult compile(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
+CodeGenCompilationResult compile_DEPRECATED(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
+CompilationResult compile(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
+CompilationResult compile(const ModuleId& moduleId, lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
 
 using AnnotatorFn = void (*)(void* context, std::string& result, int fid, int instpos);
 
