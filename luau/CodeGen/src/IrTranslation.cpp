@@ -12,8 +12,8 @@
 #include "lstate.h"
 #include "ltm.h"
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenLoadTVTag, false)
 LUAU_FASTFLAGVARIABLE(LuauCodegenDirectUserdataFlow, false)
+LUAU_FASTFLAGVARIABLE(LuauCodegenFixVectorFields, false)
 
 namespace Luau
 {
@@ -111,18 +111,11 @@ static void translateInstLoadConstant(IrBuilder& build, int ra, int k)
         build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), build.constDouble(protok.value.n));
         build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TNUMBER));
     }
-    else if (FFlag::LuauCodegenLoadTVTag)
+    else
     {
         // Tag could be LUA_TSTRING or LUA_TVECTOR; for TSTRING we could generate LOAD_POINTER/STORE_POINTER/STORE_TAG, but it's not profitable;
         // however, it's still valuable to preserve the tag throughout the optimization pipeline to eliminate tag checks.
         IrOp load = build.inst(IrCmd::LOAD_TVALUE, build.vmConst(k), build.constInt(0), build.constTag(protok.tt));
-        build.inst(IrCmd::STORE_TVALUE, build.vmReg(ra), load);
-    }
-    else
-    {
-        // Remaining tag here right now is LUA_TSTRING, while it can be transformed to LOAD_POINTER/STORE_POINTER/STORE_TAG, it's not profitable right
-        // now
-        IrOp load = build.inst(IrCmd::LOAD_TVALUE, build.vmConst(k));
         build.inst(IrCmd::STORE_TVALUE, build.vmReg(ra), load);
     }
 }
@@ -1205,19 +1198,19 @@ void translateInstGetTableKS(IrBuilder& build, const Instruction* pc, int pcpos)
         TString* str = gco2ts(build.function.proto->k[aux].value.gc);
         const char* field = getstr(str);
 
-        if (*field == 'X' || *field == 'x')
+        if ((!FFlag::LuauCodegenFixVectorFields || str->len == 1) && (*field == 'X' || *field == 'x'))
         {
             IrOp value = build.inst(IrCmd::LOAD_FLOAT, build.vmReg(rb), build.constInt(0));
             build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), value);
             build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TNUMBER));
         }
-        else if (*field == 'Y' || *field == 'y')
+        else if ((!FFlag::LuauCodegenFixVectorFields || str->len == 1) && (*field == 'Y' || *field == 'y'))
         {
             IrOp value = build.inst(IrCmd::LOAD_FLOAT, build.vmReg(rb), build.constInt(4));
             build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), value);
             build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TNUMBER));
         }
-        else if (*field == 'Z' || *field == 'z')
+        else if ((!FFlag::LuauCodegenFixVectorFields || str->len == 1) && (*field == 'Z' || *field == 'z'))
         {
             IrOp value = build.inst(IrCmd::LOAD_FLOAT, build.vmReg(rb), build.constInt(8));
             build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), value);

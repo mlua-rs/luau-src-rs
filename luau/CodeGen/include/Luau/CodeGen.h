@@ -40,7 +40,11 @@ enum class CodeGenCompilationResult
     CodeGenAssemblerFinalizationFailure = 7,  // Failure during assembler finalization
     CodeGenLoweringFailure = 8,               // Lowering failed
     AllocationFailed = 9,                     // Native codegen failed due to an allocation error
+
+    Count = 10,
 };
+
+std::string toString(const CodeGenCompilationResult& result);
 
 struct ProtoCompilationFailure
 {
@@ -114,7 +118,6 @@ void setNativeExecutionEnabled(lua_State* L, bool enabled);
 using ModuleId = std::array<uint8_t, 16>;
 
 // Builds target function and all inner functions
-CodeGenCompilationResult compile_DEPRECATED(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
 CompilationResult compile(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
 CompilationResult compile(const ModuleId& moduleId, lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
 
@@ -168,6 +171,7 @@ struct AssemblyOptions
     bool includeAssembly = false;
     bool includeIr = false;
     bool includeOutlinedCode = false;
+    bool includeIrTypes = false;
 
     IncludeIrPrefix includeIrPrefix = IncludeIrPrefix::Yes;
     IncludeUseInfo includeUseInfo = IncludeUseInfo::Yes;
