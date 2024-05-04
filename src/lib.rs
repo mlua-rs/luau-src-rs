@@ -91,6 +91,7 @@ impl Build {
             .join("luau")
             .join("Compiler")
             .join("include");
+        let custom_source_dir = source_dir_base.join("luau").join("Custom").join("src");
         let vm_source_dir = source_dir_base.join("luau").join("VM").join("src");
         let vm_include_dir = source_dir_base.join("luau").join("VM").join("include");
 
@@ -180,6 +181,15 @@ impl Build {
             .out_dir(&lib_dir)
             .compile(compiler_lib_name);
 
+        // Build customization lib
+        let custom_lib_name = "luaucustom";
+        config
+            .clone()
+            .include(&common_include_dir)
+            .add_files_by_ext(&custom_source_dir, "cpp")
+            .out_dir(&lib_dir)
+            .compile(custom_lib_name);
+
         // Build VM
         let vm_lib_name = "luauvm";
         config
@@ -204,6 +214,7 @@ impl Build {
             libs: vec![
                 ast_lib_name.to_string(),
                 compiler_lib_name.to_string(),
+                custom_lib_name.to_string(),
                 vm_lib_name.to_string(),
             ],
             cpp_stdlib: Self::get_cpp_link_stdlib(target),
