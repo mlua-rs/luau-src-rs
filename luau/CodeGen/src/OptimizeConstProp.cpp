@@ -16,9 +16,12 @@
 
 LUAU_FASTINTVARIABLE(LuauCodeGenMinLinearBlockPath, 3)
 LUAU_FASTINTVARIABLE(LuauCodeGenReuseSlotLimit, 64)
+LUAU_FASTINTVARIABLE(LuauCodeGenReuseUdataTagLimit, 64)
 LUAU_FASTFLAGVARIABLE(DebugLuauAbortingChecks, false)
 LUAU_FASTFLAG(LuauCodegenRemoveDeadStores5)
-LUAU_FASTFLAGVARIABLE(LuauCodegenLoadPropCheckRegLinkInTv, false)
+LUAU_FASTFLAGVARIABLE(LuauCodegenFixSplitStoreConstMismatch, false)
+LUAU_FASTFLAG(LuauCodegenUserdataOps)
+LUAU_FASTFLAG(LuauCodegenUserdataAlloc)
 
 namespace Luau
 {
@@ -198,6 +201,11 @@ struct ConstPropState
     void invalidateHeapBufferData()
     {
         checkBufferLenCache.clear();
+    }
+
+    void invalidateUserdataData()
+    {
+        useradataTagCache.clear();
     }
 
     void invalidateHeap()
@@ -417,6 +425,9 @@ struct ConstPropState
         invalidateValuePropagation();
         invalidateHeapTableData();
         invalidateHeapBufferData();
+
+        if (FFlag::LuauCodegenUserdataOps)
+            invalidateUserdataData();
     }
 
     IrFunction& function;
@@ -446,6 +457,9 @@ struct ConstPropState
     std::vector<uint32_t> checkArraySizeCache; // Additionally, fallback block argument might be different
 
     std::vector<uint32_t> checkBufferLenCache; // Additionally, fallback block argument might be different
+
+    // Userdata tag cache can point to both NEW_USERDATA and CHECK_USERDATA_TAG instructions
+    std::vector<uint32_t> useradataTagCache; // Additionally, fallback block argument might be different
 };
 
 static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid, uint32_t firstReturnReg, int nresults)
@@ -739,7 +753,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
 
             // If we know the tag, we can try extracting the value from a register used by LOAD_TVALUE
             // To do that, we have to ensure that the register link of the source value is still valid
-            if (tag != 0xff && (!FFlag::LuauCodegenLoadPropCheckRegLinkInTv || state.tryGetRegLink(inst.b) != nullptr))
+            if (tag != 0xff && state.tryGetRegLink(inst.b) != nullptr)
             {
                 if (IrInst* arg = function.asInstOp(inst.b); arg && arg->cmd == IrCmd::LOAD_TVALUE && arg->a.kind == IrOpKind::VmReg)
                 {
@@ -750,18 +764,48 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
                 }
             }
 
-            // If we have constant tag and value, replace TValue store with tag/value pair store
-            if (tag != 0xff && value.kind != IrOpKind::None && (tag == LUA_TBOOLEAN || tag == LUA_TNUMBER || isGCO(tag)))
+            if (FFlag::LuauCodegenFixSplitStoreConstMismatch)
             {
-                replace(function, block, index, {IrCmd::STORE_SPLIT_TVALUE, inst.a, build.constTag(tag), value, inst.c});
+                // If we have constant tag and value, replace TValue store with tag/value pair store
+                bool canSplitTvalueStore = false;
 
-                // Value can be propagated to future loads of the same register
-                if (inst.a.kind == IrOpKind::VmReg && activeLoadValue != kInvalidInstIdx)
-                    state.valueMap[state.versionedVmRegLoad(activeLoadCmd, inst.a)] = activeLoadValue;
+                if (tag == LUA_TBOOLEAN &&
+                    (value.kind == IrOpKind::Inst || (value.kind == IrOpKind::Constant && function.constOp(value).kind == IrConstKind::Int)))
+                    canSplitTvalueStore = true;
+                else if (tag == LUA_TNUMBER &&
+                         (value.kind == IrOpKind::Inst || (value.kind == IrOpKind::Constant && function.constOp(value).kind == IrConstKind::Double)))
+                    canSplitTvalueStore = true;
+                else if (tag != 0xff && isGCO(tag) && value.kind == IrOpKind::Inst)
+                    canSplitTvalueStore = true;
+
+                if (canSplitTvalueStore)
+                {
+                    replace(function, block, index, {IrCmd::STORE_SPLIT_TVALUE, inst.a, build.constTag(tag), value, inst.c});
+
+                    // Value can be propagated to future loads of the same register
+                    if (inst.a.kind == IrOpKind::VmReg && activeLoadValue != kInvalidInstIdx)
+                        state.valueMap[state.versionedVmRegLoad(activeLoadCmd, inst.a)] = activeLoadValue;
+                }
+                else if (inst.a.kind == IrOpKind::VmReg)
+                {
+                    state.forwardVmRegStoreToLoad(inst, IrCmd::LOAD_TVALUE);
+                }
             }
-            else if (inst.a.kind == IrOpKind::VmReg)
+            else
             {
-                state.forwardVmRegStoreToLoad(inst, IrCmd::LOAD_TVALUE);
+                // If we have constant tag and value, replace TValue store with tag/value pair store
+                if (tag != 0xff && value.kind != IrOpKind::None && (tag == LUA_TBOOLEAN || tag == LUA_TNUMBER || isGCO(tag)))
+                {
+                    replace(function, block, index, {IrCmd::STORE_SPLIT_TVALUE, inst.a, build.constTag(tag), value, inst.c});
+
+                    // Value can be propagated to future loads of the same register
+                    if (inst.a.kind == IrOpKind::VmReg && activeLoadValue != kInvalidInstIdx)
+                        state.valueMap[state.versionedVmRegLoad(activeLoadCmd, inst.a)] = activeLoadValue;
+                }
+                else if (inst.a.kind == IrOpKind::VmReg)
+                {
+                    state.forwardVmRegStoreToLoad(inst, IrCmd::LOAD_TVALUE);
+                }
             }
         }
         break;
@@ -1031,6 +1075,37 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             state.checkBufferLenCache.push_back(index);
         break;
     }
+    case IrCmd::CHECK_USERDATA_TAG:
+    {
+        CODEGEN_ASSERT(FFlag::LuauCodegenUserdataOps);
+
+        for (uint32_t prevIdx : state.useradataTagCache)
+        {
+            IrInst& prev = function.instructions[prevIdx];
+
+            if (prev.cmd == IrCmd::CHECK_USERDATA_TAG)
+            {
+                if (prev.a != inst.a || prev.b != inst.b)
+                    continue;
+            }
+            else if (FFlag::LuauCodegenUserdataAlloc && prev.cmd == IrCmd::NEW_USERDATA)
+            {
+                if (inst.a.kind != IrOpKind::Inst || prevIdx != inst.a.index || prev.b != inst.b)
+                    continue;
+            }
+
+            if (FFlag::DebugLuauAbortingChecks)
+                replace(function, inst.c, build.undef());
+            else
+                kill(function, inst);
+
+            return; // Break out from both the loop and the switch
+        }
+
+        if (int(state.useradataTagCache.size()) < FInt::LuauCodeGenReuseUdataTagLimit)
+            state.useradataTagCache.push_back(index);
+        break;
+    }
     case IrCmd::BUFFER_READI8:
     case IrCmd::BUFFER_READU8:
     case IrCmd::BUFFER_WRITEI8:
@@ -1197,6 +1272,12 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             state.tryNumToIndexCache.push_back(index);
         break;
     case IrCmd::TRY_CALL_FASTGETTM:
+        break;
+    case IrCmd::NEW_USERDATA:
+        CODEGEN_ASSERT(FFlag::LuauCodegenUserdataAlloc);
+
+        if (int(state.useradataTagCache.size()) < FInt::LuauCodeGenReuseUdataTagLimit)
+            state.useradataTagCache.push_back(index);
         break;
     case IrCmd::INT_TO_NUM:
     case IrCmd::UINT_TO_NUM:
@@ -1481,6 +1562,9 @@ static void constPropInBlockChain(IrBuilder& build, std::vector<uint8_t>& visite
         // Same for table and buffer data propagation
         state.invalidateHeapTableData();
         state.invalidateHeapBufferData();
+
+        if (FFlag::LuauCodegenUserdataOps)
+            state.invalidateUserdataData();
 
         // Blocks in a chain are guaranteed to follow each other
         // We force that by giving all blocks the same sorting key, but consecutive chain keys
