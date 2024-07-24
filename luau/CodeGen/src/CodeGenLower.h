@@ -27,8 +27,6 @@ LUAU_FASTFLAG(DebugCodegenSkipNumbering)
 LUAU_FASTINT(CodegenHeuristicsInstructionLimit)
 LUAU_FASTINT(CodegenHeuristicsBlockLimit)
 LUAU_FASTINT(CodegenHeuristicsBlockInstructionLimit)
-LUAU_FASTFLAG(LuauCodegenRemoveDeadStores5)
-LUAU_FASTFLAG(LuauLoadUserdataInfo)
 LUAU_FASTFLAG(LuauNativeAttribute)
 
 namespace Luau
@@ -180,10 +178,7 @@ inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
 
                 if (bcTypes.result != LBC_TYPE_ANY || bcTypes.a != LBC_TYPE_ANY || bcTypes.b != LBC_TYPE_ANY || bcTypes.c != LBC_TYPE_ANY)
                 {
-                    if (FFlag::LuauLoadUserdataInfo)
-                        toString(ctx.result, bcTypes, options.compilationOptions.userdataTypes);
-                    else
-                        toString_DEPRECATED(ctx.result, bcTypes);
+                    toString(ctx.result, bcTypes, options.compilationOptions.userdataTypes);
 
                     build.logAppend("\n");
                 }
@@ -347,8 +342,7 @@ inline bool lowerFunction(IrBuilder& ir, AssemblyBuilder& build, ModuleHelpers& 
             }
         }
 
-        if (FFlag::LuauCodegenRemoveDeadStores5)
-            markDeadStoresInBlockChains(ir);
+        markDeadStoresInBlockChains(ir);
     }
 
     std::vector<uint32_t> sortedBlocks = getSortedBlockOrder(ir.function);

@@ -26,9 +26,8 @@ LUAU_FASTINTVARIABLE(LuauCompileInlineThreshold, 25)
 LUAU_FASTINTVARIABLE(LuauCompileInlineThresholdMaxBoost, 300)
 LUAU_FASTINTVARIABLE(LuauCompileInlineDepth, 5)
 
-LUAU_FASTFLAG(LuauCompileTypeInfo)
-LUAU_FASTFLAGVARIABLE(LuauCompileTempTypeInfo, false)
 LUAU_FASTFLAGVARIABLE(LuauCompileUserdataInfo, false)
+LUAU_FASTFLAGVARIABLE(LuauCompileFastcall3, false)
 
 LUAU_FASTFLAG(LuauNativeAttribute)
 
@@ -214,13 +213,6 @@ struct Compiler
 
         setDebugLine(func);
 
-        if (!FFlag::LuauCompileTypeInfo)
-        {
-            // note: we move types out of typeMap which is safe because compileFunction is only called once per function
-            if (std::string* funcType = functionTypes.find(func))
-                bytecode.setFunctionTypeInfo(std::move(*funcType));
-        }
-
         if (func->vararg)
             bytecode.emitABC(LOP_PREPVARARGS, uint8_t(self + func->args.size), 0, 0);
 
@@ -232,8 +224,7 @@ struct Compiler
         for (size_t i = 0; i < func->args.size; ++i)
             pushLocal(func->args.data[i], uint8_t(args + self + i), kDefaultAllocPc);
 
-        if (FFlag::LuauCompileTypeInfo)
-            argCount = localStack.size();
+        argCount = localStack.size();
 
         AstStatBlock* stat = func->body;
 
@@ -265,7 +256,7 @@ struct Compiler
                 bytecode.pushDebugUpval(sref(l->name));
         }
 
-        if (FFlag::LuauCompileTypeInfo && options.typeInfoLevel >= 1)
+        if (options.typeInfoLevel >= 1)
         {
             for (AstLocal* l : upvals)
             {
@@ -288,12 +279,9 @@ struct Compiler
         if (bytecode.getInstructionCount() > kMaxInstructionCount)
             CompileError::raise(func->location, "Exceeded function instruction limit; split the function into parts to compile");
 
-        if (FFlag::LuauCompileTypeInfo)
-        {
-            // note: we move types out of typeMap which is safe because compileFunction is only called once per function
-            if (std::string* funcType = functionTypes.find(func))
-                bytecode.setFunctionTypeInfo(std::move(*funcType));
-        }
+        // note: we move types out of typeMap which is safe because compileFunction is only called once per function
+        if (std::string* funcType = functionTypes.find(func))
+            bytecode.setFunctionTypeInfo(std::move(*funcType));
 
         // top-level code only executes once so it can be marked as cold if it has no loops; code with loops might be profitable to compile natively
         if (func->functionDepth == 0 && !hasLoops)
@@ -327,8 +315,7 @@ struct Compiler
         upvals.clear(); // note: instead of std::move above, we copy & clear to preserve capacity for future pushes
         stackSize = 0;
 
-        if (FFlag::LuauCompileTypeInfo)
-            argCount = 0;
+        argCount = 0;
 
         hasLoops = false;
 
@@ -473,10 +460,32 @@ struct Compiler
     {
         LUAU_ASSERT(!expr->self);
         LUAU_ASSERT(expr->args.size >= 1);
-        LUAU_ASSERT(expr->args.size <= 2 || (bfid == LBF_BIT32_EXTRACTK && expr->args.size == 3));
+
+        if (FFlag::LuauCompileFastcall3)
+            LUAU_ASSERT(expr->args.size <= 3);
+        else
+            LUAU_ASSERT(expr->args.size <= 2 || (bfid == LBF_BIT32_EXTRACTK && expr->args.size == 3));
+
         LUAU_ASSERT(bfid == LBF_BIT32_EXTRACTK ? bfK >= 0 : bfK < 0);
 
-        LuauOpcode opc = expr->args.size == 1 ? LOP_FASTCALL1 : (bfK >= 0 || isConstant(expr->args.data[1])) ? LOP_FASTCALL2K : LOP_FASTCALL2;
+        LuauOpcode opc = LOP_NOP;
+
+        if (FFlag::LuauCompileFastcall3)
+        {
+            if (expr->args.size == 1)
+                opc = LOP_FASTCALL1;
+            else if (bfK >= 0 || (expr->args.size == 2 && isConstant(expr->args.data[1])))
+                opc = LOP_FASTCALL2K;
+            else if (expr->args.size == 2)
+                opc = LOP_FASTCALL2;
+            else
+                opc = LOP_FASTCALL3;
+        }
+        else
+        {
+            opc = expr->args.size == 1 ? LOP_FASTCALL1
+                                       : (bfK >= 0 || (expr->args.size == 2 && isConstant(expr->args.data[1]))) ? LOP_FASTCALL2K : LOP_FASTCALL2;
+        }
 
         uint32_t args[3] = {};
 
@@ -504,8 +513,16 @@ struct Compiler
         size_t fastcallLabel = bytecode.emitLabel();
 
         bytecode.emitABC(opc, uint8_t(bfid), uint8_t(args[0]), 0);
-        if (opc != LOP_FASTCALL1)
+
+        if (FFlag::LuauCompileFastcall3 && opc == LOP_FASTCALL3)
+        {
+            LUAU_ASSERT(bfK < 0);
+            bytecode.emitAux(args[1] | (args[2] << 8));
+        }
+        else if (opc != LOP_FASTCALL1)
+        {
             bytecode.emitAux(bfK >= 0 ? bfK : args[1]);
+        }
 
         // Set up a traditional Lua stack for the subsequent LOP_CALL.
         // Note, as with other instructions that immediately follow FASTCALL, these are normally not executed and are used as a fallback for
@@ -628,7 +645,7 @@ struct Compiler
                 // if the last argument can return multiple values, we need to compute all of them into the remaining arguments
                 unsigned int tail = unsigned(func->args.size - expr->args.size) + 1;
                 uint8_t reg = allocReg(arg, tail);
-                uint32_t allocpc = FFlag::LuauCompileTypeInfo ? bytecode.getDebugPC() : kDefaultAllocPc;
+                uint32_t allocpc = bytecode.getDebugPC();
 
                 if (AstExprCall* expr = arg->as<AstExprCall>())
                     compileExprCall(expr, reg, tail, /* targetTop= */ true);
@@ -638,12 +655,7 @@ struct Compiler
                     LUAU_ASSERT(!"Unexpected expression type");
 
                 for (size_t j = i; j < func->args.size; ++j)
-                {
-                    if (FFlag::LuauCompileTypeInfo)
-                        args.push_back({func->args.data[j], uint8_t(reg + (j - i)), {Constant::Type_Unknown}, allocpc});
-                    else
-                        args.push_back({func->args.data[j], uint8_t(reg + (j - i))});
-                }
+                    args.push_back({func->args.data[j], uint8_t(reg + (j - i)), {Constant::Type_Unknown}, allocpc});
 
                 // all remaining function arguments have been allocated and assigned to
                 break;
@@ -652,17 +664,14 @@ struct Compiler
             {
                 // if the argument is mutated, we need to allocate a fresh register even if it's a constant
                 uint8_t reg = allocReg(arg, 1);
-                uint32_t allocpc = FFlag::LuauCompileTypeInfo ? bytecode.getDebugPC() : kDefaultAllocPc;
+                uint32_t allocpc = bytecode.getDebugPC();
 
                 if (arg)
                     compileExprTemp(arg, reg);
                 else
                     bytecode.emitABC(LOP_LOADNIL, reg, 0, 0);
 
-                if (FFlag::LuauCompileTypeInfo)
-                    args.push_back({var, reg, {Constant::Type_Unknown}, allocpc});
-                else
-                    args.push_back({var, reg});
+                args.push_back({var, reg, {Constant::Type_Unknown}, allocpc});
             }
             else if (arg == nullptr)
             {
@@ -687,14 +696,11 @@ struct Compiler
                 else
                 {
                     uint8_t temp = allocReg(arg, 1);
-                    uint32_t allocpc = FFlag::LuauCompileTypeInfo ? bytecode.getDebugPC() : kDefaultAllocPc;
+                    uint32_t allocpc = bytecode.getDebugPC();
 
                     compileExprTemp(arg, temp);
 
-                    if (FFlag::LuauCompileTypeInfo)
-                        args.push_back({var, temp, {Constant::Type_Unknown}, allocpc});
-                    else
-                        args.push_back({var, temp});
+                    args.push_back({var, temp, {Constant::Type_Unknown}, allocpc});
                 }
             }
         }
@@ -708,16 +714,9 @@ struct Compiler
         for (InlineArg& arg : args)
         {
             if (arg.value.type == Constant::Type_Unknown)
-            {
-                if (FFlag::LuauCompileTypeInfo)
-                    pushLocal(arg.local, arg.reg, arg.allocpc);
-                else
-                    pushLocal(arg.local, arg.reg, kDefaultAllocPc);
-            }
+                pushLocal(arg.local, arg.reg, arg.allocpc);
             else
-            {
                 locstants[arg.local] = arg.value;
-            }
         }
 
         // the inline frame will be used to compile return statements as well as to reject recursive inlining attempts
@@ -857,11 +856,28 @@ struct Compiler
             }
         }
 
-        // Optimization: for 1/2 argument fast calls use specialized opcodes
-        if (bfid >= 0 && expr->args.size >= 1 && expr->args.size <= 2)
+        unsigned maxFastcallArgs = 2;
+
+        // Fastcall with 3 arguments is only used if it can help save one or more move instructions
+        if (FFlag::LuauCompileFastcall3 && bfid >= 0 && expr->args.size == 3)
+        {
+            for (size_t i = 0; i < expr->args.size; ++i)
+            {
+                if (int reg = getExprLocalReg(expr->args.data[i]); reg >= 0)
+                {
+                    maxFastcallArgs = 3;
+                    break;
+                }
+            }
+        }
+
+        // Optimization: for 1/2/3 argument fast calls use specialized opcodes
+        if (bfid >= 0 && expr->args.size >= 1 && expr->args.size <= (FFlag::LuauCompileFastcall3 ? maxFastcallArgs : 2u))
         {
             if (!isExprMultRet(expr->args.data[expr->args.size - 1]))
+            {
                 return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
+            }
             else if (options.optimizationLevel >= 2)
             {
                 // when a builtin is none-safe with matching arity, even if the last expression returns 0 or >1 arguments,
@@ -922,8 +938,7 @@ struct Compiler
             bytecode.emitABC(LOP_NAMECALL, regs, selfreg, uint8_t(BytecodeBuilder::getStringHash(iname)));
             bytecode.emitAux(cid);
 
-            if (FFlag::LuauCompileTempTypeInfo)
-                hintTemporaryExprRegType(fi->expr, selfreg, LBC_TYPE_TABLE, /* instLength */ 2);
+            hintTemporaryExprRegType(fi->expr, selfreg, LBC_TYPE_TABLE, /* instLength */ 2);
         }
         else if (bfid >= 0)
         {
@@ -1579,8 +1594,7 @@ struct Compiler
 
                 bytecode.emitABC(getBinaryOpArith(expr->op, /* k= */ true), target, rl, uint8_t(rc));
 
-                if (FFlag::LuauCompileTempTypeInfo)
-                    hintTemporaryExprRegType(expr->left, rl, LBC_TYPE_NUMBER, /* instLength */ 1);
+                hintTemporaryExprRegType(expr->left, rl, LBC_TYPE_NUMBER, /* instLength */ 1);
             }
             else
             {
@@ -1595,8 +1609,7 @@ struct Compiler
 
                         bytecode.emitABC(op, target, uint8_t(lc), uint8_t(rr));
 
-                        if (FFlag::LuauCompileTempTypeInfo)
-                            hintTemporaryExprRegType(expr->right, rr, LBC_TYPE_NUMBER, /* instLength */ 1);
+                        hintTemporaryExprRegType(expr->right, rr, LBC_TYPE_NUMBER, /* instLength */ 1);
                         return;
                     }
                 }
@@ -1606,11 +1619,8 @@ struct Compiler
 
                 bytecode.emitABC(getBinaryOpArith(expr->op), target, rl, rr);
 
-                if (FFlag::LuauCompileTempTypeInfo)
-                {
-                    hintTemporaryExprRegType(expr->left, rl, LBC_TYPE_NUMBER, /* instLength */ 1);
-                    hintTemporaryExprRegType(expr->right, rr, LBC_TYPE_NUMBER, /* instLength */ 1);
-                }
+                hintTemporaryExprRegType(expr->left, rl, LBC_TYPE_NUMBER, /* instLength */ 1);
+                hintTemporaryExprRegType(expr->right, rr, LBC_TYPE_NUMBER, /* instLength */ 1);
             }
         }
         break;
@@ -2051,8 +2061,7 @@ struct Compiler
         bytecode.emitABC(LOP_GETTABLEKS, target, reg, uint8_t(BytecodeBuilder::getStringHash(iname)));
         bytecode.emitAux(cid);
 
-        if (FFlag::LuauCompileTempTypeInfo)
-            hintTemporaryExprRegType(expr->expr, reg, LBC_TYPE_TABLE, /* instLength */ 2);
+        hintTemporaryExprRegType(expr->expr, reg, LBC_TYPE_TABLE, /* instLength */ 2);
     }
 
     void compileExprIndexExpr(AstExprIndexExpr* expr, uint8_t target)
@@ -2936,7 +2945,7 @@ struct Compiler
 
         // note: allocReg in this case allocates into parent block register - note that we don't have RegScope here
         uint8_t vars = allocReg(stat, unsigned(stat->vars.size));
-        uint32_t allocpc = FFlag::LuauCompileTypeInfo ? bytecode.getDebugPC() : kDefaultAllocPc;
+        uint32_t allocpc = bytecode.getDebugPC();
 
         compileExprListTemp(stat->values, vars, uint8_t(stat->vars.size), /* targetTop= */ true);
 
@@ -3068,7 +3077,7 @@ struct Compiler
         // this makes sure the code inside the loop can't interfere with the iteration process (other than modifying the table we're iterating
         // through)
         uint8_t varreg = regs + 2;
-        uint32_t varregallocpc = FFlag::LuauCompileTypeInfo ? bytecode.getDebugPC() : kDefaultAllocPc;
+        uint32_t varregallocpc = bytecode.getDebugPC();
 
         if (Variable* il = variables.find(stat->var); il && il->written)
             varreg = allocReg(stat, 1);
@@ -3135,7 +3144,7 @@ struct Compiler
         // note that we reserve at least 2 variables; this allows our fast path to assume that we need 2 variables instead of 1 or 2
         uint8_t vars = allocReg(stat, std::max(unsigned(stat->vars.size), 2u));
         LUAU_ASSERT(vars == regs + 3);
-        uint32_t varsallocpc = FFlag::LuauCompileTypeInfo ? bytecode.getDebugPC() : kDefaultAllocPc;
+        uint32_t varsallocpc = bytecode.getDebugPC();
 
         LuauOpcode skipOp = LOP_FORGPREP;
 
@@ -3432,13 +3441,10 @@ struct Compiler
 
                 bytecode.emitABC(getBinaryOpArith(stat->op), target, target, rr);
 
-                if (FFlag::LuauCompileTempTypeInfo)
-                {
-                    if (var.kind != LValue::Kind_Local)
-                        hintTemporaryRegType(stat->var, target, LBC_TYPE_NUMBER, /* instLength */ 1);
+                if (var.kind != LValue::Kind_Local)
+                    hintTemporaryRegType(stat->var, target, LBC_TYPE_NUMBER, /* instLength */ 1);
 
-                    hintTemporaryExprRegType(stat->value, rr, LBC_TYPE_NUMBER, /* instLength */ 1);
-                }
+                hintTemporaryExprRegType(stat->value, rr, LBC_TYPE_NUMBER, /* instLength */ 1);
             }
         }
         break;
@@ -3672,9 +3678,7 @@ struct Compiler
         l.reg = reg;
         l.allocated = true;
         l.debugpc = bytecode.getDebugPC();
-
-        if (FFlag::LuauCompileTypeInfo)
-            l.allocpc = allocpc == kDefaultAllocPc ? l.debugpc : allocpc;
+        l.allocpc = allocpc == kDefaultAllocPc ? l.debugpc : allocpc;
     }
 
     bool areLocalsCaptured(size_t start)
@@ -3737,7 +3741,7 @@ struct Compiler
                 bytecode.pushDebugLocal(sref(localStack[i]->name), l->reg, l->debugpc, debugpc);
             }
 
-            if (FFlag::LuauCompileTypeInfo && options.typeInfoLevel >= 1 && i >= argCount)
+            if (options.typeInfoLevel >= 1 && i >= argCount)
             {
                 uint32_t debugpc = bytecode.getDebugPC();
                 LuauBytecodeType ty = LBC_TYPE_ANY;
@@ -3825,8 +3829,6 @@ struct Compiler
 
     void hintTemporaryRegType(AstExpr* expr, int reg, LuauBytecodeType expectedType, int instLength)
     {
-        LUAU_ASSERT(FFlag::LuauCompileTempTypeInfo);
-
         // If we know the type of a temporary and it's not the type that would be expected by codegen, provide a hint
         if (LuauBytecodeType* ty = exprTypes.find(expr))
         {
@@ -3837,8 +3839,6 @@ struct Compiler
 
     void hintTemporaryExprRegType(AstExpr* expr, int reg, LuauBytecodeType expectedType, int instLength)
     {
-        LUAU_ASSERT(FFlag::LuauCompileTempTypeInfo);
-
         // If we allocated a temporary register for the operation argument, try hinting its type
         if (!getExprLocal(expr))
             hintTemporaryRegType(expr, reg, expectedType, instLength);
@@ -4127,9 +4127,7 @@ struct Compiler
 static void setCompileOptionsForNativeCompilation(CompileOptions& options)
 {
     options.optimizationLevel = 2; // note: this might be removed in the future in favor of --!optimize
-
-    if (FFlag::LuauCompileTypeInfo)
-        options.typeInfoLevel = 1;
+    options.typeInfoLevel = 1;
 }
 
 void compileOrThrow(BytecodeBuilder& bytecode, const ParseResult& parseResult, const AstNameTable& names, const CompileOptions& inputOptions)
@@ -4218,18 +4216,9 @@ void compileOrThrow(BytecodeBuilder& bytecode, const ParseResult& parseResult, c
     }
 
     // computes type information for all functions based on type annotations
-    if (FFlag::LuauCompileTypeInfo)
-    {
-        if (options.typeInfoLevel >= 1)
-            buildTypeMap(compiler.functionTypes, compiler.localTypes, compiler.exprTypes, root, options.vectorType, compiler.userdataTypes,
-                compiler.builtinTypes, compiler.builtins, compiler.globals, bytecode);
-    }
-    else
-    {
-        if (functionVisitor.hasTypes)
-            buildTypeMap(compiler.functionTypes, compiler.localTypes, compiler.exprTypes, root, options.vectorType, compiler.userdataTypes,
-                compiler.builtinTypes, compiler.builtins, compiler.globals, bytecode);
-    }
+    if (options.typeInfoLevel >= 1)
+        buildTypeMap(compiler.functionTypes, compiler.localTypes, compiler.exprTypes, root, options.vectorType, compiler.userdataTypes,
+            compiler.builtinTypes, compiler.builtins, compiler.globals, bytecode);
 
     for (AstExprFunction* expr : functions)
     {
