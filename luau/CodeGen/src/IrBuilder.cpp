@@ -13,8 +13,6 @@
 
 #include <string.h>
 
-LUAU_FASTFLAG(LuauCodegenFastcall3)
-
 namespace Luau
 {
 namespace CodeGen
@@ -432,8 +430,9 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
         translateInstDupTable(*this, pc, i);
         break;
     case LOP_SETLIST:
-        inst(IrCmd::SETLIST, constUint(i), vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), constInt(LUAU_INSN_C(*pc) - 1), constUint(pc[1]),
-            undef());
+        inst(
+            IrCmd::SETLIST, constUint(i), vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), constInt(LUAU_INSN_C(*pc) - 1), constUint(pc[1]), undef()
+        );
         break;
     case LOP_GETUPVAL:
         translateInstGetUpval(*this, pc, i);
@@ -457,8 +456,6 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
         handleFastcallFallback(translateFastCallN(*this, pc, i, true, 2, vmConst(pc[1]), undef()), pc, i);
         break;
     case LOP_FASTCALL3:
-        CODEGEN_ASSERT(FFlag::LuauCodegenFastcall3);
-
         handleFastcallFallback(translateFastCallN(*this, pc, i, true, 3, vmReg(pc[1] & 0xff), vmReg((pc[1] >> 8) & 0xff)), pc, i);
         break;
     case LOP_FORNPREP:
@@ -603,7 +600,8 @@ void IrBuilder::clone(const IrBlock& source, bool removeCurrentTerminator)
 {
     DenseHashMap<uint32_t, uint32_t> instRedir{~0u};
 
-    auto redirect = [&instRedir](IrOp& op) {
+    auto redirect = [&instRedir](IrOp& op)
+    {
         if (op.kind == IrOpKind::Inst)
         {
             if (const uint32_t* newIndex = instRedir.find(op.index))

@@ -15,9 +15,6 @@
 #include "lstate.h"
 #include "lgc.h"
 
-LUAU_FASTFLAG(LuauCodegenFastcall3)
-LUAU_FASTFLAG(LuauCodegenMathSign)
-
 namespace Luau
 {
 namespace CodeGen
@@ -34,9 +31,13 @@ IrLoweringX64::IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, 
     , valueTracker(function)
     , exitHandlerMap(~0u)
 {
-    valueTracker.setRestoreCallack(&regs, [](void* context, IrInst& inst) {
-        ((IrRegAllocX64*)context)->restore(inst, false);
-    });
+    valueTracker.setRestoreCallack(
+        &regs,
+        [](void* context, IrInst& inst)
+        {
+            ((IrRegAllocX64*)context)->restore(inst, false);
+        }
+    );
 
     build.align(kFunctionAlignment, X64::AlignmentDataX64::Ud2);
 }
@@ -118,7 +119,8 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
             build.vcvtss2sd(inst.regX64, inst.regX64, dword[rBase + vmRegOp(inst.a) * sizeof(TValue) + offsetof(TValue, value) + intOp(inst.b)]);
         else if (inst.a.kind == IrOpKind::VmConst)
             build.vcvtss2sd(
-                inst.regX64, inst.regX64, dword[rConstants + vmConstOp(inst.a) * sizeof(TValue) + offsetof(TValue, value) + intOp(inst.b)]);
+                inst.regX64, inst.regX64, dword[rConstants + vmConstOp(inst.a) * sizeof(TValue) + offsetof(TValue, value) + intOp(inst.b)]
+            );
         else
             CODEGEN_ASSERT(!"Unsupported instruction form");
         break;
@@ -591,8 +593,6 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         break;
     case IrCmd::SIGN_NUM:
     {
-        CODEGEN_ASSERT(FFlag::LuauCodegenMathSign);
-
         inst.regX64 = regs.allocRegOrReuse(SizeX64::xmmword, index, {inst.a});
 
         ScopedRegX64 tmp0{regs, SizeX64::xmmword};
@@ -1033,10 +1033,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
 
     case IrCmd::FASTCALL:
     {
-        if (FFlag::LuauCodegenFastcall3)
-            emitBuiltin(regs, build, uintOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.d));
-        else
-            emitBuiltin(regs, build, uintOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.f));
+        emitBuiltin(regs, build, uintOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.d));
         break;
     }
     case IrCmd::INVOKE_FASTCALL:
@@ -1047,7 +1044,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         ScopedRegX64 argsAlt{regs};
 
         // 'E' argument can only be produced by LOP_FASTCALL3
-        if (FFlag::LuauCodegenFastcall3 && inst.e.kind != IrOpKind::Undef)
+        if (inst.e.kind != IrOpKind::Undef)
         {
             CODEGEN_ASSERT(intOp(inst.f) == 3);
 
@@ -1074,8 +1071,8 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
 
         int ra = vmRegOp(inst.b);
         int arg = vmRegOp(inst.c);
-        int nparams = intOp(FFlag::LuauCodegenFastcall3 ? inst.f : inst.e);
-        int nresults = intOp(FFlag::LuauCodegenFastcall3 ? inst.g : inst.f);
+        int nparams = intOp(inst.f);
+        int nresults = intOp(inst.g);
 
         IrCallWrapperX64 callWrap(regs, build, index);
         callWrap.addArgument(SizeX64::qword, rState);
@@ -1083,7 +1080,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         callWrap.addArgument(SizeX64::qword, luauRegAddress(arg));
         callWrap.addArgument(SizeX64::dword, nresults);
 
-        if (FFlag::LuauCodegenFastcall3 && inst.e.kind != IrOpKind::Undef)
+        if (inst.e.kind != IrOpKind::Undef)
             callWrap.addArgument(SizeX64::qword, argsAlt);
         else
             callWrap.addArgument(SizeX64::qword, args);
@@ -1522,7 +1519,8 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
     case IrCmd::SETLIST:
         regs.assertAllFree();
         emitInstSetList(
-            regs, build, vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.d), uintOp(inst.e), inst.f.kind == IrOpKind::Undef ? -1 : int(uintOp(inst.f)));
+            regs, build, vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.d), uintOp(inst.e), inst.f.kind == IrOpKind::Undef ? -1 : int(uintOp(inst.f))
+        );
         break;
     case IrCmd::CALL:
         regs.assertAllFree();

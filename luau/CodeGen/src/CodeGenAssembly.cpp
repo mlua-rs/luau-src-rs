@@ -149,7 +149,10 @@ static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, A
     Proto* root = clvalue(func)->l.p;
 
     if ((options.compilationOptions.flags & CodeGen_OnlyNativeModules) != 0 && (root->flags & LPF_NATIVE_MODULE) == 0)
+    {
+        build.finalize();
         return std::string();
+    }
 
     std::vector<Proto*> protos;
     if (FFlag::LuauNativeAttribute)
@@ -157,18 +160,24 @@ static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, A
     else
         gatherFunctions_DEPRECATED(protos, root, options.compilationOptions.flags);
 
-    protos.erase(std::remove_if(protos.begin(), protos.end(),
-                     [](Proto* p) {
-                         return p == nullptr;
-                     }),
-        protos.end());
+    protos.erase(
+        std::remove_if(
+            protos.begin(),
+            protos.end(),
+            [](Proto* p)
+            {
+                return p == nullptr;
+            }
+        ),
+        protos.end()
+    );
 
     if (stats)
         stats->totalFunctions += unsigned(protos.size());
 
     if (protos.empty())
     {
-        build.finalize(); // to avoid assertion in AssemblyBuilder dtor
+        build.finalize();
         return std::string();
     }
 
