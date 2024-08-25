@@ -203,6 +203,7 @@ impl Build {
         for f in &["lua.h", "luaconf.h", "lualib.h"] {
             fs::copy(vm_include_dir.join(f), include_dir.join(f)).unwrap();
         }
+        #[allow(clippy::single_element_loop)]
         for f in &["luacode.h"] {
             fs::copy(compiler_include_dir.join(f), include_dir.join(f)).unwrap();
         }
