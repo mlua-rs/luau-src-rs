@@ -15,4 +15,4 @@ Minimal sources of Roblox Luau and logic to build them.
 members = ["testcrate"]
 
 [dependencies]
-cc = "1.0.82"
+cc = "1.1"

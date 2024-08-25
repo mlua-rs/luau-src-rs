@@ -113,8 +113,7 @@ impl Build {
             .host(host)
             .warnings(false)
             .cargo_metadata(false)
-            .flag_if_supported("-std=c++17")
-            .flag_if_supported("/std:c++17") // MSVC
+            .std("c++17")
             .cpp(true);
 
         if target.ends_with("emscripten") {
@@ -217,7 +216,7 @@ impl Build {
                 custom_lib_name.to_string(),
                 vm_lib_name.to_string(),
             ],
-            cpp_stdlib: Self::get_cpp_link_stdlib(target),
+            cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
         };
 
         if self.enable_codegen {
@@ -227,15 +226,30 @@ impl Build {
         artifacts
     }
 
-    fn get_cpp_link_stdlib(target: &str) -> Option<String> {
-        // Copied from the `cc` crate
+    /// Returns the C++ standard library:
+    /// 1) Uses `CXXSTDLIB` environment variable if set
+    /// 2) The default `c++` for OS X and BSDs
+    /// 3) `c++_shared` for Android
+    /// 4) `None` for MSVC
+    /// 5) `stdc++` for anything else.
+    ///
+    /// Inspired by the `cc` crate.
+    fn get_cpp_link_stdlib(target: &str, host: &str) -> Option<String> {
+        // Try to get value from the `CXXSTDLIB` env variable
+        let kind = if host == target { "HOST" } else { "TARGET" };
+        let res = env::var(format!("CXXSTDLIB_{target}"))
+            .or_else(|_| env::var(format!("CXXSTDLIB_{}", target.replace('-', "_"))))
+            .or_else(|_| env::var(format!("{kind}_CXXSTDLIB")))
+            .or_else(|_| env::var("CXXSTDLIB"))
+            .ok();
+        if res.is_some() {
+            return res;
+        }
+
         if target.contains("msvc") {
             None
-        } else if target.contains("apple") {
-            Some("c++".to_string())
-        } else if target.contains("freebsd") {
-            Some("c++".to_string())
-        } else if target.contains("openbsd") {
+        } else if target.contains("apple") | target.contains("freebsd") | target.contains("openbsd")
+        {
             Some("c++".to_string())
         } else if target.contains("android") {
             Some("c++_shared".to_string())
