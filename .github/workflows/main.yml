@@ -52,7 +52,7 @@ jobs:
       shell: bash
     - name: Build
       run: |
-        cargo build --manifest-path testcrate/Cargo.toml --target ${{ matrix.target }} --release
+        cargo build --manifest-path testcrate/Cargo.toml --target ${{ matrix.target }}
       shell: bash
 
   test:
@@ -76,7 +76,7 @@ jobs:
         target: ${{ matrix.target }}
     - name: Run tests
       run: |
-        cargo test --manifest-path testcrate/Cargo.toml --release
+        cargo test --manifest-path testcrate/Cargo.toml
       shell: bash
 
   test_emscripten:
@@ -96,7 +96,7 @@ jobs:
     - name: Run emscripten tests
       run: |
         export CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUNNER=node
-        cargo test --manifest-path testcrate/Cargo.toml --release
+        cargo test --manifest-path testcrate/Cargo.toml
       shell: bash
 
   rustfmt:
