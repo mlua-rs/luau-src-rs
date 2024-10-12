@@ -184,6 +184,8 @@ impl Build {
         let custom_lib_name = "luaucustom";
         config
             .clone()
+            .include(&vm_include_dir)
+            .include(&vm_source_dir)
             .include(&common_include_dir)
             .add_files_by_ext(&custom_source_dir, "cpp")
             .out_dir(&lib_dir)

@@ -2,6 +2,7 @@
 name = "testcrate"
 version = "0.1.0"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
+edition = "2021"
 
 [build-dependencies.luau0-src]
 path = ".."

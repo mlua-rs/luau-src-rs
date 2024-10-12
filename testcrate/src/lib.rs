@@ -33,6 +33,12 @@ extern "C" {
         cont: *const c_void,
     );
 
+    pub fn lua_createtable(state: *mut c_void, narr: c_int, nrec: c_int);
+    pub fn lua_setmetatable(state: *mut c_void, index: c_int) -> c_int;
+    pub fn lua_getmetatable(state: *mut c_void, index: c_int) -> c_int;
+    pub fn lua_getmetatablepointer(state: *mut c_void, index: c_int) -> *const c_void;
+    pub fn lua_topointer(state: *mut c_void, index: c_int) -> *const c_void;
+
     pub fn luau_compile(
         source: *const c_char,
         size: usize,
@@ -107,6 +113,27 @@ fn test_luau() {
         lua_pushinteger(state, 321);
         lua_call(state, 2, 1);
         assert_eq!(lua_tointegerx(state, -1, ptr::null_mut()), 444);
+
+        lua_close(state);
+    }
+}
+
+#[test]
+fn test_metatablepointer() {
+    use std::ptr;
+    unsafe {
+        let state = luaL_newstate();
+        assert!(state != ptr::null_mut());
+
+        lua_createtable(state, 0, 0);
+        assert!(lua_getmetatablepointer(state, -1).is_null());
+
+        lua_createtable(state, 0, 0);
+        let mt_ptr1 = lua_topointer(state, -1);
+
+        lua_setmetatable(state, -2);
+        let mt_ptr2 = lua_getmetatablepointer(state, -1);
+        assert_eq!(mt_ptr1, mt_ptr2);
 
         lua_close(state);
     }
