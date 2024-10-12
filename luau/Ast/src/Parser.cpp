@@ -16,10 +16,11 @@ LUAU_FASTINTVARIABLE(LuauParseErrorLimit, 100)
 // Warning: If you are introducing new syntax, ensure that it is behind a separate
 // flag so that we don't break production games by reverting syntax changes.
 // See docs/SyntaxChanges.md for an explanation.
-LUAU_FASTFLAGVARIABLE(DebugLuauDeferredConstraintResolution, false)
+LUAU_FASTFLAGVARIABLE(LuauSolverV2, false)
 LUAU_FASTFLAGVARIABLE(LuauNativeAttribute, false)
 LUAU_FASTFLAGVARIABLE(LuauAttributeSyntaxFunExpr, false)
-LUAU_FASTFLAGVARIABLE(LuauUserDefinedTypeFunctions, false)
+LUAU_FASTFLAGVARIABLE(LuauUserDefinedTypeFunctionsSyntax2, false)
+LUAU_FASTFLAGVARIABLE(LuauAllowFragmentParsing, false)
 
 namespace Luau
 {
@@ -211,6 +212,15 @@ Parser::Parser(const char* buffer, size_t bufferSize, AstNameTable& names, Alloc
     scratchExpr.reserve(16);
     scratchLocal.reserve(16);
     scratchBinding.reserve(16);
+
+    if (FFlag::LuauAllowFragmentParsing)
+    {
+        if (options.parseFragment)
+        {
+            localMap = options.parseFragment->localMap;
+            localStack = options.parseFragment->localStack;
+        }
+    }
 }
 
 bool Parser::blockFollow(const Lexeme& l)
@@ -784,6 +794,7 @@ AstStat* Parser::parseAttributeStat()
             AstExpr* expr = parsePrimaryExpr(/* asStatement= */ true);
             return parseDeclaration(expr->location, attributes);
         }
+        [[fallthrough]];
     default:
         return reportStatError(
             lexer.current().location,
@@ -890,10 +901,10 @@ AstStat* Parser::parseReturn()
 AstStat* Parser::parseTypeAlias(const Location& start, bool exported)
 {
     // parsing a type function
-    if (FFlag::LuauUserDefinedTypeFunctions)
+    if (FFlag::LuauUserDefinedTypeFunctionsSyntax2)
     {
         if (lexer.current().type == Lexeme::ReservedFunction)
-            return parseTypeFunction(start);
+            return parseTypeFunction(start, exported);
     }
 
     // parsing a type alias
@@ -916,10 +927,13 @@ AstStat* Parser::parseTypeAlias(const Location& start, bool exported)
 }
 
 // type function Name `(' arglist `)' `=' funcbody `end'
-AstStat* Parser::parseTypeFunction(const Location& start)
+AstStat* Parser::parseTypeFunction(const Location& start, bool exported)
 {
     Lexeme matchFn = lexer.current();
     nextLexeme();
+
+    if (exported)
+        report(start, "Type function cannot be exported");
 
     // parse the name of the type function
     std::optional<Name> fnName = parseNameOpt("type function name");
@@ -928,7 +942,12 @@ AstStat* Parser::parseTypeFunction(const Location& start)
 
     matchRecoveryStopOnToken[Lexeme::ReservedEnd]++;
 
+    size_t oldTypeFunctionDepth = typeFunctionDepth;
+    typeFunctionDepth = functionStack.size();
+
     AstExprFunction* body = parseFunctionBody(/* hasself */ false, matchFn, fnName->name, nullptr, AstArray<AstAttr*>({nullptr, 0})).first;
+
+    typeFunctionDepth = oldTypeFunctionDepth;
 
     matchRecoveryStopOnToken[Lexeme::ReservedEnd]--;
 
@@ -2279,6 +2298,12 @@ AstExpr* Parser::parseNameExpr(const char* context)
     if (value && *value)
     {
         AstLocal* local = *value;
+
+        if (FFlag::LuauUserDefinedTypeFunctionsSyntax2)
+        {
+            if (local->functionDepth < typeFunctionDepth)
+                return reportExprError(lexer.current().location, {}, "Type function cannot reference outer local '%s'", local->name.value);
+        }
 
         return allocator.alloc<AstExprLocal>(name->location, local, local->functionDepth != functionStack.size() - 1);
     }
