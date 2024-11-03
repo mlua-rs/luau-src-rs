@@ -214,10 +214,10 @@ impl Build {
             lib_dir,
             include_dir,
             libs: vec![
-                ast_lib_name.to_string(),
-                compiler_lib_name.to_string(),
-                custom_lib_name.to_string(),
                 vm_lib_name.to_string(),
+                compiler_lib_name.to_string(),
+                ast_lib_name.to_string(),
+                custom_lib_name.to_string(),
             ],
             cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
         };
@@ -277,7 +277,7 @@ impl Artifacts {
 
     pub fn print_cargo_metadata(&self) {
         println!("cargo:rustc-link-search=native={}", self.lib_dir.display());
-        for lib in self.libs.iter() {
+        for lib in &self.libs {
             println!("cargo:rustc-link-lib=static={}", lib);
         }
         if let Some(ref cpp_stdlib) = self.cpp_stdlib {
