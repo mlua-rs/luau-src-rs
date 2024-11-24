@@ -3,13 +3,6 @@
 
 #include "Luau/Common.h"
 
-LUAU_FASTFLAG(LuauNativeAttribute);
-
-// The default value here is 643 because the first release in which this was implemented is 644,
-// and actively we want new changes to be off by default until they're enabled consciously.
-// The flag is placed in AST project here to be common in all Luau libraries
-LUAU_DYNAMIC_FASTINTVARIABLE(LuauTypeSolverRelease, 643)
-
 namespace Luau
 {
 
@@ -90,6 +83,11 @@ AstExprConstantString::AstExprConstantString(const Location& location, const Ast
 void AstExprConstantString::visit(AstVisitor* visitor)
 {
     visitor->visit(this);
+}
+
+bool AstExprConstantString::isQuoted() const
+{
+    return quoteStyle == QuoteStyle::QuotedSimple || quoteStyle == QuoteStyle::QuotedRaw;
 }
 
 AstExprLocal::AstExprLocal(const Location& location, AstLocal* local, bool upvalue)
@@ -239,8 +237,6 @@ void AstExprFunction::visit(AstVisitor* visitor)
 
 bool AstExprFunction::hasNativeAttribute() const
 {
-    LUAU_ASSERT(FFlag::LuauNativeAttribute);
-
     for (const auto attribute : attributes)
     {
         if (attribute->type == AstAttr::Type::Native)
@@ -760,11 +756,18 @@ void AstStatTypeAlias::visit(AstVisitor* visitor)
     }
 }
 
-AstStatTypeFunction::AstStatTypeFunction(const Location& location, const AstName& name, const Location& nameLocation, AstExprFunction* body)
+AstStatTypeFunction::AstStatTypeFunction(
+    const Location& location,
+    const AstName& name,
+    const Location& nameLocation,
+    AstExprFunction* body,
+    bool exported
+)
     : AstStat(ClassIndex(), location)
     , name(name)
     , nameLocation(nameLocation)
     , body(body)
+    , exported(exported)
 {
 }
 
