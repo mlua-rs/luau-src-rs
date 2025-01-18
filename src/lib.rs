@@ -30,7 +30,7 @@ impl Build {
             out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("luau-build")),
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
-            max_cstack_size: 100000,
+            max_cstack_size: 1000000,
             use_longjmp: false,
             enable_codegen: false,
             vector_size: 3,
