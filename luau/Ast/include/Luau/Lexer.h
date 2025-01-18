@@ -153,7 +153,7 @@ private:
 class Lexer
 {
 public:
-    Lexer(const char* buffer, std::size_t bufferSize, AstNameTable& names);
+    Lexer(const char* buffer, std::size_t bufferSize, AstNameTable& names, Position startPosition = {0, 0});
 
     void setSkipComments(bool skip);
     void setReadNames(bool read);

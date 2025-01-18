@@ -18,12 +18,11 @@ LUAU_FASTINTVARIABLE(LuauParseErrorLimit, 100)
 // flag so that we don't break production games by reverting syntax changes.
 // See docs/SyntaxChanges.md for an explanation.
 LUAU_FASTFLAGVARIABLE(LuauSolverV2)
-LUAU_FASTFLAGVARIABLE(LuauUserDefinedTypeFunctionsSyntax2)
-LUAU_FASTFLAGVARIABLE(LuauUserDefinedTypeFunParseExport)
 LUAU_FASTFLAGVARIABLE(LuauAllowFragmentParsing)
-LUAU_FASTFLAGVARIABLE(LuauPortableStringZeroCheck)
 LUAU_FASTFLAGVARIABLE(LuauAllowComplexTypesInGenericParams)
 LUAU_FASTFLAGVARIABLE(LuauErrorRecoveryForTableTypes)
+LUAU_FASTFLAGVARIABLE(LuauErrorRecoveryForClassNames)
+LUAU_FASTFLAGVARIABLE(LuauFixFunctionNameStartPosition)
 
 namespace Luau
 {
@@ -179,7 +178,7 @@ ParseResult Parser::parse(const char* buffer, size_t bufferSize, AstNameTable& n
 
 Parser::Parser(const char* buffer, size_t bufferSize, AstNameTable& names, Allocator& allocator, const ParseOptions& options)
     : options(options)
-    , lexer(buffer, bufferSize, names)
+    , lexer(buffer, bufferSize, names, options.parseFragment ? options.parseFragment->resumePosition : Position(0, 0))
     , allocator(allocator)
     , recursionCounter(0)
     , endMismatchSuspect(Lexeme(Location(), Lexeme::Eof))
@@ -640,7 +639,7 @@ AstStat* Parser::parseFor()
 }
 
 // funcname ::= Name {`.' Name} [`:' Name]
-AstExpr* Parser::parseFunctionName(Location start, bool& hasself, AstName& debugname)
+AstExpr* Parser::parseFunctionName(Location start_DEPRECATED, bool& hasself, AstName& debugname)
 {
     if (lexer.current().type == Lexeme::Name)
         debugname = AstName(lexer.current().name);
@@ -660,7 +659,9 @@ AstExpr* Parser::parseFunctionName(Location start, bool& hasself, AstName& debug
         // while we could concatenate the name chain, for now let's just write the short name
         debugname = name.name;
 
-        expr = allocator.alloc<AstExprIndexName>(Location(start, name.location), expr, name.name, name.location, opPosition, '.');
+        expr = allocator.alloc<AstExprIndexName>(
+            Location(FFlag::LuauFixFunctionNameStartPosition ? expr->location : start_DEPRECATED, name.location), expr, name.name, name.location, opPosition, '.'
+        );
 
         // note: while the parser isn't recursive here, we're generating recursive structures of unbounded depth
         incrementRecursionCounter("function name");
@@ -679,7 +680,9 @@ AstExpr* Parser::parseFunctionName(Location start, bool& hasself, AstName& debug
         // while we could concatenate the name chain, for now let's just write the short name
         debugname = name.name;
 
-        expr = allocator.alloc<AstExprIndexName>(Location(start, name.location), expr, name.name, name.location, opPosition, ':');
+        expr = allocator.alloc<AstExprIndexName>(
+            Location(FFlag::LuauFixFunctionNameStartPosition ? expr->location : start_DEPRECATED, name.location), expr, name.name, name.location, opPosition, ':'
+        );
 
         hasself = true;
     }
@@ -909,11 +912,8 @@ AstStat* Parser::parseReturn()
 AstStat* Parser::parseTypeAlias(const Location& start, bool exported)
 {
     // parsing a type function
-    if (FFlag::LuauUserDefinedTypeFunctionsSyntax2)
-    {
-        if (lexer.current().type == Lexeme::ReservedFunction)
-            return parseTypeFunction(start, exported);
-    }
+    if (lexer.current().type == Lexeme::ReservedFunction)
+        return parseTypeFunction(start, exported);
 
     // parsing a type alias
 
@@ -939,12 +939,6 @@ AstStat* Parser::parseTypeFunction(const Location& start, bool exported)
 {
     Lexeme matchFn = lexer.current();
     nextLexeme();
-
-    if (!FFlag::LuauUserDefinedTypeFunParseExport)
-    {
-        if (exported)
-            report(start, "Type function cannot be exported");
-    }
 
     // parse the name of the type function
     std::optional<Name> fnName = parseNameOpt("type function name");
@@ -1133,8 +1127,7 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
                 AstType* type = parseType();
 
                 // since AstName contains a char*, it can't contain null
-                bool containsNull = chars && (FFlag::LuauPortableStringZeroCheck ? memchr(chars->data, 0, chars->size) != nullptr
-                                                                                 : strnlen(chars->data, chars->size) < chars->size);
+                bool containsNull = chars && (memchr(chars->data, 0, chars->size) != nullptr);
 
                 if (chars && !containsNull)
                 {
@@ -1165,12 +1158,30 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
             }
             else
             {
-                Location propStart = lexer.current().location;
-                Name propName = parseName("property name");
-                expectAndConsume(':', "property type annotation");
-                AstType* propType = parseType();
-                props.push_back(AstDeclaredClassProp{propName.name, propName.location, propType, false, Location(propStart, lexer.previousLocation())}
-                );
+                if (FFlag::LuauErrorRecoveryForClassNames)
+                {
+                    Location propStart = lexer.current().location;
+                    std::optional<Name> propName = parseNameOpt("property name");
+
+                    if (!propName)
+                        break;
+
+                    expectAndConsume(':', "property type annotation");
+                    AstType* propType = parseType();
+                    props.push_back(
+                        AstDeclaredClassProp{propName->name, propName->location, propType, false, Location(propStart, lexer.previousLocation())}
+                    );
+                }
+                else
+                {
+                    Location propStart = lexer.current().location;
+                    Name propName = parseName("property name");
+                    expectAndConsume(':', "property type annotation");
+                    AstType* propType = parseType();
+                    props.push_back(
+                        AstDeclaredClassProp{propName.name, propName.location, propType, false, Location(propStart, lexer.previousLocation())}
+                    );
+                }
             }
         }
 
@@ -1628,8 +1639,7 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
             AstType* type = parseType();
 
             // since AstName contains a char*, it can't contain null
-            bool containsNull = chars && (FFlag::LuauPortableStringZeroCheck ? memchr(chars->data, 0, chars->size) != nullptr
-                                                                             : strnlen(chars->data, chars->size) < chars->size);
+            bool containsNull = chars && (memchr(chars->data, 0, chars->size) != nullptr);
 
             if (chars && !containsNull)
                 props.push_back(AstTableProp{AstName(chars->data), begin.location, type, access, accessLocation});
@@ -2227,7 +2237,8 @@ std::optional<AstExprBinary::Op> Parser::checkBinaryConfusables(const BinaryOpPr
         report(Location(start, next.location), "Unexpected '||'; did you mean 'or'?");
         return AstExprBinary::Or;
     }
-    else if (curr.type == '!' && next.type == '=' && curr.location.end == next.location.begin && binaryPriority[AstExprBinary::CompareNe].left > limit)
+    else if (curr.type == '!' && next.type == '=' && curr.location.end == next.location.begin &&
+             binaryPriority[AstExprBinary::CompareNe].left > limit)
     {
         nextLexeme();
         report(Location(start, next.location), "Unexpected '!='; did you mean '~='?");
@@ -2333,11 +2344,8 @@ AstExpr* Parser::parseNameExpr(const char* context)
     {
         AstLocal* local = *value;
 
-        if (FFlag::LuauUserDefinedTypeFunctionsSyntax2)
-        {
-            if (local->functionDepth < typeFunctionDepth)
-                return reportExprError(lexer.current().location, {}, "Type function cannot reference outer local '%s'", local->name.value);
-        }
+        if (local->functionDepth < typeFunctionDepth)
+            return reportExprError(lexer.current().location, {}, "Type function cannot reference outer local '%s'", local->name.value);
 
         return allocator.alloc<AstExprLocal>(name->location, local, local->functionDepth != functionStack.size() - 1);
     }
@@ -2578,7 +2586,8 @@ AstExpr* Parser::parseSimpleExpr()
     {
         return parseNumber();
     }
-    else if (lexer.current().type == Lexeme::RawString || lexer.current().type == Lexeme::QuotedString || lexer.current().type == Lexeme::InterpStringSimple)
+    else if (lexer.current().type == Lexeme::RawString || lexer.current().type == Lexeme::QuotedString ||
+             lexer.current().type == Lexeme::InterpStringSimple)
     {
         return parseString();
     }

@@ -8,6 +8,9 @@
 
 #include <limits.h>
 
+LUAU_FASTFLAGVARIABLE(LexerResumesFromPosition2)
+LUAU_FASTFLAGVARIABLE(LexerFixInterpStringStart)
+
 namespace Luau
 {
 
@@ -303,13 +306,16 @@ static char unescape(char ch)
     }
 }
 
-Lexer::Lexer(const char* buffer, size_t bufferSize, AstNameTable& names)
+Lexer::Lexer(const char* buffer, size_t bufferSize, AstNameTable& names, Position startPosition)
     : buffer(buffer)
     , bufferSize(bufferSize)
     , offset(0)
-    , line(0)
-    , lineOffset(0)
-    , lexeme(Location(Position(0, 0), 0), Lexeme::Eof)
+    , line(FFlag::LexerResumesFromPosition2 ? startPosition.line : 0)
+    , lineOffset(FFlag::LexerResumesFromPosition2 ? 0u - startPosition.column : 0)
+    , lexeme(
+          (FFlag::LexerResumesFromPosition2 ? Location(Position(startPosition.line, startPosition.column), 0) : Location(Position(0, 0), 0)),
+          Lexeme::Eof
+      )
     , names(names)
     , skipComments(false)
     , readNames(true)
@@ -405,6 +411,7 @@ char Lexer::peekch(unsigned int lookahead) const
     return (offset + lookahead < bufferSize) ? buffer[offset + lookahead] : 0;
 }
 
+LUAU_FORCEINLINE
 Position Lexer::position() const
 {
     return Position(line, offset - lineOffset);
@@ -754,7 +761,7 @@ Lexeme Lexer::readNext()
             return Lexeme(Location(start, 1), '}');
         }
 
-        return readInterpolatedStringSection(position(), Lexeme::InterpStringMid, Lexeme::InterpStringEnd);
+        return readInterpolatedStringSection(FFlag::LexerFixInterpStringStart ? start : position(), Lexeme::InterpStringMid, Lexeme::InterpStringEnd);
     }
 
     case '=':
