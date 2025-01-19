@@ -5,10 +5,18 @@ use std::os::raw::{c_char, c_int, c_long, c_void};
 pub struct lua_CompileOptions {
     optimizationLevel: c_int,
     debugLevel: c_int,
+    typeInfoLevel: c_int,
     coverageLevel: c_int,
     vectorLib: *const c_char,
     vectorCtor: *const c_char,
+    vectorType: *const c_char,
     mutableGlobals: *const *const c_char,
+    userdataTypes: *const *const c_char,
+    librariesWithKnownMembers: *const *const c_char,
+    libraryMemberTypeCb: Option<unsafe extern "C" fn(*const c_char, *const c_char) -> c_int>,
+    libraryMemberConstantCb:
+        Option<unsafe extern "C" fn(*const c_char, *const c_char, *mut *mut c_void)>,
+    disabledBuiltins: *const *const c_char,
 }
 
 extern "C" {
