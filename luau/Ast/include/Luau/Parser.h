@@ -63,6 +63,14 @@ public:
         ParseOptions options = ParseOptions()
     );
 
+    static ParseExprResult parseExpr(
+        const char* buffer,
+        std::size_t bufferSize,
+        AstNameTable& names,
+        Allocator& allocator,
+        ParseOptions options = ParseOptions()
+    );
+
 private:
     struct Name;
     struct Binding;
@@ -144,7 +152,7 @@ private:
     AstStat* parseReturn();
 
     // type Name `=' Type
-    AstStat* parseTypeAlias(const Location& start, bool exported);
+    AstStat* parseTypeAlias(const Location& start, bool exported, Position typeKeywordPosition);
 
     // type function Name ... end
     AstStat* parseTypeFunction(const Location& start, bool exported);
@@ -222,8 +230,8 @@ private:
     AstType* parseFunctionTypeTail(
         const Lexeme& begin,
         const AstArray<AstAttr*>& attributes,
-        AstArray<AstGenericType> generics,
-        AstArray<AstGenericTypePack> genericPacks,
+        AstArray<AstGenericType*> generics,
+        AstArray<AstGenericTypePack*> genericPacks,
         AstArray<AstType*> params,
         AstArray<std::optional<AstArgumentName>> paramNames,
         AstTypePack* varargAnnotation
@@ -294,7 +302,12 @@ private:
     Name parseIndexName(const char* context, const Position& previous);
 
     // `<' namelist `>'
-    std::pair<AstArray<AstGenericType>, AstArray<AstGenericTypePack>> parseGenericTypeList(bool withDefaultValues);
+    std::pair<AstArray<AstGenericType*>, AstArray<AstGenericTypePack*>> parseGenericTypeList(
+        bool withDefaultValues,
+        Position* openPosition = nullptr,
+        TempVector<Position>* commaPositions = nullptr,
+        Position* closePosition = nullptr
+    );
 
     // `<' Type[, ...] `>'
     AstArray<AstTypeOrPack> parseTypeParams(
@@ -474,8 +487,8 @@ private:
     std::vector<AstExprTable::Item> scratchItem;
     std::vector<CstExprTable::Item> scratchCstItem;
     std::vector<AstArgumentName> scratchArgName;
-    std::vector<AstGenericType> scratchGenericTypes;
-    std::vector<AstGenericTypePack> scratchGenericTypePacks;
+    std::vector<AstGenericType*> scratchGenericTypes;
+    std::vector<AstGenericTypePack*> scratchGenericTypePacks;
     std::vector<std::optional<AstArgumentName>> scratchOptArgName;
     std::vector<Position> scratchPosition;
     std::string scratchData;
