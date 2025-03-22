@@ -17,7 +17,6 @@ pub struct Build {
 }
 
 pub struct Artifacts {
-    include_dir: PathBuf,
     lib_dir: PathBuf,
     libs: Vec<String>,
     cpp_stdlib: Option<String>,
@@ -77,8 +76,6 @@ impl Build {
         let target = &self.target.as_ref().expect("TARGET not set")[..];
         let host = &self.host.as_ref().expect("HOST not set")[..];
         let out_dir = self.out_dir.as_ref().expect("OUT_DIR not set");
-        let lib_dir = out_dir.join("lib");
-        let include_dir = out_dir.join("include");
 
         let source_dir_base = Path::new(env!("CARGO_MANIFEST_DIR"));
         let common_include_dir = source_dir_base.join("luau").join("Common").join("include");
@@ -96,15 +93,9 @@ impl Build {
         let vm_include_dir = source_dir_base.join("luau").join("VM").join("include");
 
         // Cleanup
-        if lib_dir.exists() {
-            fs::remove_dir_all(&lib_dir).unwrap();
+        if out_dir.exists() {
+            fs::remove_dir_all(&out_dir).unwrap();
         }
-        fs::create_dir_all(&lib_dir).unwrap();
-
-        if include_dir.exists() {
-            fs::remove_dir_all(&include_dir).unwrap();
-        }
-        fs::create_dir_all(&include_dir).unwrap();
 
         // Configure C++
         let mut config = cc::Build::new();
@@ -144,7 +135,7 @@ impl Build {
             .include(&ast_include_dir)
             .include(&common_include_dir)
             .add_files_by_ext(&ast_source_dir, "cpp")
-            .out_dir(&lib_dir)
+            .out_dir(&out_dir)
             .compile(ast_lib_name);
 
         // Build CogeGen
@@ -164,7 +155,7 @@ impl Build {
                 // Code generator uses lua VM internals, so we need to provide the same defines used to build VM
                 .define("LUA_API", "extern \"C\"")
                 .add_files_by_ext(&codegen_source_dir, "cpp")
-                .out_dir(&lib_dir)
+                .out_dir(&out_dir)
                 .compile(codegen_lib_name);
         }
 
@@ -177,7 +168,7 @@ impl Build {
             .include(&common_include_dir)
             .define("LUACODE_API", "extern \"C\"")
             .add_files_by_ext(&compiler_source_dir, "cpp")
-            .out_dir(&lib_dir)
+            .out_dir(&out_dir)
             .compile(compiler_lib_name);
 
         // Build customization lib
@@ -188,7 +179,7 @@ impl Build {
             .include(&vm_source_dir)
             .include(&common_include_dir)
             .add_files_by_ext(&custom_source_dir, "cpp")
-            .out_dir(&lib_dir)
+            .out_dir(&out_dir)
             .compile(custom_lib_name);
 
         // Build VM
@@ -199,20 +190,11 @@ impl Build {
             .include(&common_include_dir)
             .define("LUA_API", "extern \"C\"")
             .add_files_by_ext(&vm_source_dir, "cpp")
-            .out_dir(&lib_dir)
+            .out_dir(&out_dir)
             .compile(vm_lib_name);
 
-        for f in &["lua.h", "luaconf.h", "lualib.h"] {
-            fs::copy(vm_include_dir.join(f), include_dir.join(f)).unwrap();
-        }
-        #[allow(clippy::single_element_loop)]
-        for f in &["luacode.h"] {
-            fs::copy(compiler_include_dir.join(f), include_dir.join(f)).unwrap();
-        }
-
         let mut artifacts = Artifacts {
-            lib_dir,
-            include_dir,
+            lib_dir: out_dir.to_path_buf(),
             libs: vec![
                 vm_lib_name.to_string(),
                 compiler_lib_name.to_string(),
@@ -263,10 +245,6 @@ impl Build {
 }
 
 impl Artifacts {
-    pub fn include_dir(&self) -> &Path {
-        &self.include_dir
-    }
-
     pub fn lib_dir(&self) -> &Path {
         &self.lib_dir
     }
