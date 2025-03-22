@@ -1,6 +1,6 @@
 [package]
 name = "luau0-src"
-version = "0.12.3+luau663"
+version = "0.13.0+luau667"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 edition = "2021"
 repository = "https://github.com/khvzak/luau-src-rs"
@@ -8,11 +8,11 @@ keywords = ["lua", "luau", "roblox"]
 readme = "README.md"
 license = "MIT"
 description = """
-Minimal sources of Roblox Luau and logic to build them.
+Minimal sources of Luau and logic to build them.
 """
 
 [workspace]
 members = ["testcrate"]
 
 [dependencies]
-cc = "1.2"
+cc = { version = "1.2", features = ["parallel"] }
