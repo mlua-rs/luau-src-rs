@@ -54,6 +54,12 @@ typedef int (*lua_Continuation)(lua_State* L, int status);
 
 typedef void* (*lua_Alloc)(void* ud, void* ptr, size_t osize, size_t nsize);
 
+/*
+** prototype for userdata destructor
+*/
+
+typedef void (*lua_Destructor)(lua_State* L, void* userdata);
+
 // non-return type
 #define l_noret void LUA_NORETURN
 
@@ -191,7 +197,7 @@ LUA_API int lua_pushthread(lua_State* L);
 LUA_API void lua_pushlightuserdatatagged(lua_State* L, void* p, int tag);
 LUA_API void* lua_newuserdatatagged(lua_State* L, size_t sz, int tag);
 LUA_API void* lua_newuserdatataggedwithmetatable(lua_State* L, size_t sz, int tag); // metatable fetched with lua_getuserdatametatable
-LUA_API void* lua_newuserdatadtor(lua_State* L, size_t sz, void (*dtor)(void*));
+LUA_API void* lua_newuserdatadtor(lua_State* L, size_t sz, lua_Destructor dtor);
 
 LUA_API void* lua_newbuffer(lua_State* L, size_t sz);
 
@@ -320,8 +326,6 @@ LUA_API uintptr_t lua_encodepointer(lua_State* L, uintptr_t p);
 LUA_API double lua_clock();
 
 LUA_API void lua_setuserdatatag(lua_State* L, int idx, int tag);
-
-typedef void (*lua_Destructor)(lua_State* L, void* userdata);
 
 LUA_API void lua_setuserdatadtor(lua_State* L, int tag, lua_Destructor dtor);
 LUA_API lua_Destructor lua_getuserdatadtor(lua_State* L, int tag);
