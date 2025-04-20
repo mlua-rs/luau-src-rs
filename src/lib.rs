@@ -22,9 +22,8 @@ pub struct Artifacts {
     cpp_stdlib: Option<String>,
 }
 
-impl Build {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Build {
+impl Default for Build {
+    fn default() -> Self {
         Build {
             out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("luau-build")),
             target: env::var("TARGET").ok(),
@@ -34,6 +33,12 @@ impl Build {
             enable_codegen: false,
             vector_size: 3,
         }
+    }
+}
+
+impl Build {
+    pub fn new() -> Build {
+        Build::default()
     }
 
     pub fn out_dir<P: AsRef<Path>>(&mut self, path: P) -> &mut Build {
@@ -77,24 +82,14 @@ impl Build {
         let host = &self.host.as_ref().expect("HOST not set")[..];
         let out_dir = self.out_dir.as_ref().expect("OUT_DIR not set");
 
-        let source_dir_base = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let common_include_dir = source_dir_base.join("luau").join("Common").join("include");
-        let ast_source_dir = source_dir_base.join("luau").join("Ast").join("src");
-        let ast_include_dir = source_dir_base.join("luau").join("Ast").join("include");
-        let codegen_source_dir = source_dir_base.join("luau").join("CodeGen").join("src");
-        let codegen_include_dir = source_dir_base.join("luau").join("CodeGen").join("include");
-        let compiler_source_dir = source_dir_base.join("luau").join("Compiler").join("src");
-        let compiler_include_dir = source_dir_base
-            .join("luau")
-            .join("Compiler")
-            .join("include");
-        let custom_source_dir = source_dir_base.join("luau").join("Custom").join("src");
-        let vm_source_dir = source_dir_base.join("luau").join("VM").join("src");
-        let vm_include_dir = source_dir_base.join("luau").join("VM").join("include");
+        let source_base_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let common_include_dir = source_base_dir.join("luau").join("Common").join("include");
+        let vm_source_dir = source_base_dir.join("luau").join("VM").join("src");
+        let vm_include_dir = source_base_dir.join("luau").join("VM").join("include");
 
         // Cleanup
         if out_dir.exists() {
-            fs::remove_dir_all(&out_dir).unwrap();
+            fs::remove_dir_all(out_dir).unwrap();
         }
 
         // Configure C++
@@ -116,6 +111,7 @@ impl Build {
         // Common defines
         config.define("LUAI_MAXCSTACK", &*self.max_cstack_size.to_string());
         config.define("LUA_VECTOR_SIZE", &*self.vector_size.to_string());
+        config.define("LUA_API", "extern \"C\"");
 
         if self.use_longjmp {
             config.define("LUA_USE_LONGJMP", "1");
@@ -128,18 +124,23 @@ impl Build {
             config.flag_if_supported("-fno-math-errno");
         }
 
-        // Build Ast
+        config.include(&common_include_dir);
+
+        // Build `Ast` library
         let ast_lib_name = "luauast";
+        let ast_source_dir = source_base_dir.join("luau").join("Ast").join("src");
+        let ast_include_dir = source_base_dir.join("luau").join("Ast").join("include");
         config
             .clone()
             .include(&ast_include_dir)
-            .include(&common_include_dir)
             .add_files_by_ext(&ast_source_dir, "cpp")
-            .out_dir(&out_dir)
+            .out_dir(out_dir)
             .compile(ast_lib_name);
 
-        // Build CogeGen
+        // Build `CogeGen` library
         let codegen_lib_name = "luaucodegen";
+        let codegen_source_dir = source_base_dir.join("luau").join("CodeGen").join("src");
+        let codegen_include_dir = source_base_dir.join("luau").join("CodeGen").join("include");
         if self.enable_codegen {
             if target.ends_with("emscripten") {
                 panic!("codegen (jit) is not supported on emscripten");
@@ -148,49 +149,70 @@ impl Build {
             config
                 .clone()
                 .include(&codegen_include_dir)
-                .include(&common_include_dir)
                 .include(&vm_include_dir)
                 .include(&vm_source_dir)
                 .define("LUACODEGEN_API", "extern \"C\"")
-                // Code generator uses lua VM internals, so we need to provide the same defines used to build VM
-                .define("LUA_API", "extern \"C\"")
                 .add_files_by_ext(&codegen_source_dir, "cpp")
-                .out_dir(&out_dir)
+                .out_dir(out_dir)
                 .compile(codegen_lib_name);
         }
 
-        // Build Compiler
+        // Build `Compiler` library
         let compiler_lib_name = "luaucompiler";
+        let compiler_source_dir = source_base_dir.join("luau").join("Compiler").join("src");
+        let compiler_include_dir = (source_base_dir.join("luau").join("Compiler")).join("include");
         config
             .clone()
             .include(&compiler_include_dir)
             .include(&ast_include_dir)
-            .include(&common_include_dir)
             .define("LUACODE_API", "extern \"C\"")
             .add_files_by_ext(&compiler_source_dir, "cpp")
-            .out_dir(&out_dir)
+            .out_dir(out_dir)
             .compile(compiler_lib_name);
 
-        // Build customization lib
+        // Build customization library
         let custom_lib_name = "luaucustom";
+        let custom_source_dir = source_base_dir.join("luau").join("Custom").join("src");
         config
             .clone()
             .include(&vm_include_dir)
             .include(&vm_source_dir)
-            .include(&common_include_dir)
             .add_files_by_ext(&custom_source_dir, "cpp")
-            .out_dir(&out_dir)
+            .out_dir(out_dir)
             .compile(custom_lib_name);
+
+        // Build `Require` library
+        let require_lib_name = "luaurequire";
+        let require_base_dir = source_base_dir.join("luau").join("Require");
+        let require_source_dirs = &[
+            require_base_dir.join("Navigator").join("src"),
+            require_base_dir.join("Runtime").join("src"),
+            source_base_dir.join("luau").join("Config").join("src"),
+        ];
+        let require_include_dirs = &[
+            require_base_dir.join("Navigator").join("include"),
+            require_base_dir.join("Runtime").join("include"),
+            source_base_dir.join("luau").join("Config").join("include"),
+        ];
+        let mut require_config = config.clone();
+        for (source_dir, include_dir) in require_source_dirs.iter().zip(require_include_dirs) {
+            require_config
+                .include(include_dir)
+                .add_files_by_ext(source_dir, "cpp");
+        }
+        require_config
+            .include(&ast_include_dir)
+            .include(&vm_include_dir)
+            .out_dir(out_dir)
+            .compile(require_lib_name);
 
         // Build VM
         let vm_lib_name = "luauvm";
         config
             .clone()
             .include(&vm_include_dir)
-            .include(&common_include_dir)
-            .define("LUA_API", "extern \"C\"")
             .add_files_by_ext(&vm_source_dir, "cpp")
-            .out_dir(&out_dir)
+            .out_dir(out_dir)
             .compile(vm_lib_name);
 
         let mut artifacts = Artifacts {

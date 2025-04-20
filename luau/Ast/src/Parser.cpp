@@ -18,9 +18,6 @@ LUAU_FASTINTVARIABLE(LuauParseErrorLimit, 100)
 // flag so that we don't break production games by reverting syntax changes.
 // See docs/SyntaxChanges.md for an explanation.
 LUAU_FASTFLAGVARIABLE(LuauSolverV2)
-LUAU_FASTFLAGVARIABLE(LuauAllowComplexTypesInGenericParams)
-LUAU_FASTFLAGVARIABLE(LuauErrorRecoveryForTableTypes)
-LUAU_FASTFLAGVARIABLE(LuauExtendStatEndPosWithSemicolon)
 LUAU_FASTFLAGVARIABLE(LuauStoreCSTData2)
 LUAU_FASTFLAGVARIABLE(LuauPreserveUnionIntersectionNodeForLeadingTokenSingleType)
 LUAU_FASTFLAGVARIABLE(LuauAstTypeGroup3)
@@ -204,7 +201,9 @@ ParseExprResult Parser::parseExpr(const char* buffer, size_t bufferSize, AstName
         AstExpr* expr = p.parseExpr();
         size_t lines = p.lexer.current().location.end.line + (bufferSize > 0 && buffer[bufferSize - 1] != '\n');
 
-        return ParseExprResult{expr, lines, std::move(p.hotcomments), std::move(p.parseErrors), std::move(p.commentLocations), std::move(p.cstNodeMap)};
+        return ParseExprResult{
+            expr, lines, std::move(p.hotcomments), std::move(p.parseErrors), std::move(p.commentLocations), std::move(p.cstNodeMap)
+        };
     }
     catch (ParseError& err)
     {
@@ -316,10 +315,7 @@ AstStatBlock* Parser::parseBlockNoScope()
         {
             nextLexeme();
             stat->hasSemicolon = true;
-            if (FFlag::LuauExtendStatEndPosWithSemicolon)
-            {
-                stat->location.end = lexer.previousLocation().end;
-            }
+            stat->location.end = lexer.previousLocation().end;
         }
 
         body.push_back(stat);
@@ -745,14 +741,7 @@ AstExpr* Parser::parseFunctionName(bool& hasself, AstName& debugname)
         // while we could concatenate the name chain, for now let's just write the short name
         debugname = name.name;
 
-        expr = allocator.alloc<AstExprIndexName>(
-            Location(expr->location, name.location),
-            expr,
-            name.name,
-            name.location,
-            opPosition,
-            '.'
-        );
+        expr = allocator.alloc<AstExprIndexName>(Location(expr->location, name.location), expr, name.name, name.location, opPosition, '.');
 
         // note: while the parser isn't recursive here, we're generating recursive structures of unbounded depth
         incrementRecursionCounter("function name");
@@ -771,14 +760,7 @@ AstExpr* Parser::parseFunctionName(bool& hasself, AstName& debugname)
         // while we could concatenate the name chain, for now let's just write the short name
         debugname = name.name;
 
-        expr = allocator.alloc<AstExprIndexName>(
-            Location(expr->location, name.location),
-            expr,
-            name.name,
-            name.location,
-            opPosition,
-            ':'
-        );
+        expr = allocator.alloc<AstExprIndexName>(Location(expr->location, name.location), expr, name.name, name.location, opPosition, ':');
 
         hasself = true;
     }
@@ -1666,13 +1648,12 @@ std::pair<AstExprFunction*, AstLocal*> Parser::parseFunctionBody(
 
     auto* cstNode = FFlag::LuauStoreCSTData2 && options.storeCstData ? allocator.alloc<CstExprFunction>() : nullptr;
 
-    auto [generics, genericPacks] = FFlag::LuauStoreCSTData2 && cstNode ? parseGenericTypeList(
-                                                                                          /* withDefaultValues= */ false,
-                                                                                          &cstNode->openGenericsPosition,
-                                                                                          &cstNode->genericsCommaPositions,
-                                                                                          &cstNode->closeGenericsPosition
-                                                                                      )
-                                                                                    : parseGenericTypeList(/* withDefaultValues= */ false);
+    auto [generics, genericPacks] =
+        FFlag::LuauStoreCSTData2 && cstNode
+            ? parseGenericTypeList(
+                  /* withDefaultValues= */ false, &cstNode->openGenericsPosition, &cstNode->genericsCommaPositions, &cstNode->closeGenericsPosition
+              )
+            : parseGenericTypeList(/* withDefaultValues= */ false);
 
     MatchLexeme matchParen = lexer.current();
     expectAndConsume('(', "function");
@@ -1687,8 +1668,7 @@ std::pair<AstExprFunction*, AstLocal*> Parser::parseFunctionBody(
     //
     //  function (t: { a: number }) end
     //
-    if (FFlag::LuauErrorRecoveryForTableTypes)
-        matchRecoveryStopOnToken[')']++;
+    matchRecoveryStopOnToken[')']++;
 
     TempVector<Binding> args(scratchBinding);
 
@@ -1707,8 +1687,7 @@ std::pair<AstExprFunction*, AstLocal*> Parser::parseFunctionBody(
 
     expectMatchAndConsume(')', matchParen, true);
 
-    if (FFlag::LuauErrorRecoveryForTableTypes)
-        matchRecoveryStopOnToken[')']--;
+    matchRecoveryStopOnToken[')']--;
 
     std::optional<AstTypeList> typelist = parseOptionalReturnType(cstNode ? &cstNode->returnSpecifierPosition : nullptr);
 
@@ -1822,7 +1801,12 @@ Parser::Binding Parser::parseBinding()
 }
 
 // bindinglist ::= (binding | `...') [`,' bindinglist]
-std::tuple<bool, Location, AstTypePack*> Parser::parseBindingList(TempVector<Binding>& result, bool allowDot3, AstArray<Position>* commaPositions, std::optional<Position> initialCommaPosition)
+std::tuple<bool, Location, AstTypePack*> Parser::parseBindingList(
+    TempVector<Binding>& result,
+    bool allowDot3,
+    AstArray<Position>* commaPositions,
+    std::optional<Position> initialCommaPosition
+)
 {
     TempVector<Position> localCommaPositions(scratchPosition);
 
@@ -2185,6 +2169,7 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                     if (FFlag::LuauStoreCSTData2 && options.storeCstData)
                         std::tie(style, blockDepth) = extractStringDetails();
 
+                    Position stringPosition = lexer.current().location.begin;
                     AstArray<char> sourceString;
                     std::optional<AstArray<char>> chars = parseCharArray(options.storeCstData ? &sourceString : nullptr);
 
@@ -2209,7 +2194,8 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                                 colonPosition,
                                 tableSeparator(),
                                 lexer.current().location.begin,
-                                allocator.alloc<CstExprConstantString>(sourceString, style, blockDepth)
+                                allocator.alloc<CstExprConstantString>(sourceString, style, blockDepth),
+                                stringPosition
                             });
                     }
                     else
@@ -2300,6 +2286,7 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                 if (FFlag::LuauStoreCSTData2 && options.storeCstData)
                     std::tie(style, blockDepth) = extractStringDetails();
 
+                Position stringPosition = lexer.current().location.begin;
                 AstArray<char> sourceString;
                 std::optional<AstArray<char>> chars = parseCharArray(options.storeCstData ? &sourceString : nullptr);
 
@@ -2324,7 +2311,8 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                             colonPosition,
                             tableSeparator(),
                             lexer.current().location.begin,
-                            allocator.alloc<CstExprConstantString>(sourceString, style, blockDepth)
+                            allocator.alloc<CstExprConstantString>(sourceString, style, blockDepth),
+                                stringPosition
                         });
                 }
                 else
@@ -2420,7 +2408,7 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
 
     Location end = lexer.current().location;
 
-    if (!expectMatchAndConsume('}', matchBrace, /* searchForMissing = */ FFlag::LuauErrorRecoveryForTableTypes))
+    if (!expectMatchAndConsume('}', matchBrace, /* searchForMissing = */ true))
         end = lexer.previousLocation();
 
     if (FFlag::LuauStoreCSTData2)
@@ -4100,78 +4088,66 @@ AstArray<AstTypeOrPack> Parser::parseTypeParams(Position* openingPosition, TempV
             }
             else if (lexer.current().type == '(')
             {
-                if (FFlag::LuauAllowComplexTypesInGenericParams)
+                Location begin = lexer.current().location;
+                AstType* type = nullptr;
+                AstTypePack* typePack = nullptr;
+                Lexeme::Type c = lexer.current().type;
+
+                if (c != '|' && c != '&')
                 {
-                    Location begin = lexer.current().location;
-                    AstType* type = nullptr;
-                    AstTypePack* typePack = nullptr;
-                    Lexeme::Type c = lexer.current().type;
+                    auto typeOrTypePack = parseSimpleType(/* allowPack */ true, /* inDeclarationContext */ false);
+                    type = typeOrTypePack.type;
+                    typePack = typeOrTypePack.typePack;
+                }
 
-                    if (c != '|' && c != '&')
+                // Consider the following type:
+                //
+                //  X<(T)>
+                //
+                // Is this a type pack or a parenthesized type? The
+                // assumption will be a type pack, as that's what allows one
+                // to express either a singular type pack or a potential
+                // complex type.
+
+                if (typePack)
+                {
+                    auto explicitTypePack = typePack->as<AstTypePackExplicit>();
+                    if (explicitTypePack && explicitTypePack->typeList.tailType == nullptr && explicitTypePack->typeList.types.size == 1 &&
+                        isTypeFollow(lexer.current().type))
                     {
-                        auto typeOrTypePack = parseSimpleType(/* allowPack */ true, /* inDeclarationContext */ false);
-                        type = typeOrTypePack.type;
-                        typePack = typeOrTypePack.typePack;
-                    }
-
-                    // Consider the following type:
-                    //
-                    //  X<(T)>
-                    //
-                    // Is this a type pack or a parenthesized type? The
-                    // assumption will be a type pack, as that's what allows one
-                    // to express either a singular type pack or a potential
-                    // complex type.
-
-                    if (typePack)
-                    {
-                        auto explicitTypePack = typePack->as<AstTypePackExplicit>();
-                        if (explicitTypePack && explicitTypePack->typeList.tailType == nullptr && explicitTypePack->typeList.types.size == 1 &&
-                            isTypeFollow(lexer.current().type))
+                        // If we parsed an explicit type pack with a single
+                        // type in it (something of the form `(T)`), and
+                        // the next lexeme is one that follows a type
+                        // (&, |, ?), then assume that this was actually a
+                        // parenthesized type.
+                        if (FFlag::LuauAstTypeGroup3)
                         {
-                            // If we parsed an explicit type pack with a single
-                            // type in it (something of the form `(T)`), and
-                            // the next lexeme is one that follows a type
-                            // (&, |, ?), then assume that this was actually a
-                            // parenthesized type.
-                            if (FFlag::LuauAstTypeGroup3)
-                            {
-                                auto parenthesizedType = explicitTypePack->typeList.types.data[0];
-                                parameters.push_back(
-                                    {parseTypeSuffix(allocator.alloc<AstTypeGroup>(parenthesizedType->location, parenthesizedType), begin), {}}
-                                );
-                            }
-                            else
-                                parameters.push_back({parseTypeSuffix(explicitTypePack->typeList.types.data[0], begin), {}});
+                            auto parenthesizedType = explicitTypePack->typeList.types.data[0];
+                            parameters.push_back(
+                                {parseTypeSuffix(allocator.alloc<AstTypeGroup>(parenthesizedType->location, parenthesizedType), begin), {}}
+                            );
                         }
                         else
-                        {
-                            // Otherwise, it's a type pack.
-                            parameters.push_back({{}, typePack});
-                        }
+                            parameters.push_back({parseTypeSuffix(explicitTypePack->typeList.types.data[0], begin), {}});
                     }
                     else
                     {
-                        // There's two cases in which `typePack` will be null:
-                        // - We try to parse a simple type or a type pack, and
-                        //   we get a simple type: there's no ambiguity and
-                        //   we attempt to parse a complex type.
-                        // - The next lexeme was a `|` or `&` indicating a
-                        //   union or intersection type with a leading
-                        //   separator. We just fall right into
-                        //   `parseTypeSuffix`, which allows its first
-                        //   argument to be `nullptr`
-                        parameters.push_back({parseTypeSuffix(type, begin), {}});
+                        // Otherwise, it's a type pack.
+                        parameters.push_back({{}, typePack});
                     }
                 }
                 else
                 {
-                    auto [type, typePack] = parseSimpleTypeOrPack();
-
-                    if (typePack)
-                        parameters.push_back({{}, typePack});
-                    else
-                        parameters.push_back({type, {}});
+                    // There's two cases in which `typePack` will be null:
+                    // - We try to parse a simple type or a type pack, and
+                    //   we get a simple type: there's no ambiguity and
+                    //   we attempt to parse a complex type.
+                    // - The next lexeme was a `|` or `&` indicating a
+                    //   union or intersection type with a leading
+                    //   separator. We just fall right into
+                    //   `parseTypeSuffix`, which allows its first
+                    //   argument to be `nullptr`
+                    parameters.push_back({parseTypeSuffix(type, begin), {}});
                 }
             }
             else if (lexer.current().type == '>' && parameters.empty())

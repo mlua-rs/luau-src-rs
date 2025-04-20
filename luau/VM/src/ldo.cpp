@@ -17,9 +17,6 @@
 
 #include <string.h>
 
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauStackLimit, false)
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauPopIncompleteCi, false)
-
 // keep max stack allocation request under 1GB
 #define MAX_STACK_SIZE (int(1024 / sizeof(TValue)) * 1024 * 1024)
 
@@ -183,10 +180,10 @@ static void correctstack(lua_State* L, TValue* oldstack)
 void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
 {
     // throw 'out of memory' error because space for a custom error message cannot be guaranteed here
-    if (DFFlag::LuauStackLimit && newsize > MAX_STACK_SIZE)
+    if (newsize > MAX_STACK_SIZE)
     {
-        // reallocation was performaed to setup a new CallInfo frame, which we have to remove
-        if (DFFlag::LuauPopIncompleteCi && fornewci)
+        // reallocation was performed to setup a new CallInfo frame, which we have to remove
+        if (fornewci)
         {
             CallInfo* cip = L->ci - 1;
 
@@ -221,17 +218,7 @@ void luaD_reallocCI(lua_State* L, int newsize)
 
 void luaD_growstack(lua_State* L, int n)
 {
-    if (DFFlag::LuauPopIncompleteCi)
-    {
-        luaD_reallocstack(L, getgrownstacksize(L, n), 0);
-    }
-    else
-    {
-        if (n <= L->stacksize) // double size is enough?
-            luaD_reallocstack(L, 2 * L->stacksize, 0);
-        else
-            luaD_reallocstack(L, L->stacksize + n, 0);
-    }
+    luaD_reallocstack(L, getgrownstacksize(L, n), 0);
 }
 
 CallInfo* luaD_growCI(lua_State* L)
@@ -369,6 +356,7 @@ static void resume(lua_State* L, void* ud)
     else
     {
         // resume from previous yield or break
+        LUAU_ASSERT(firstArg >= L->base);
         LUAU_ASSERT(L->status == LUA_YIELD || L->status == LUA_BREAK);
         L->status = 0;
 
@@ -482,6 +470,8 @@ static void resume_finish(lua_State* L, int status)
 
 int lua_resume(lua_State* L, lua_State* from, int nargs)
 {
+    api_check(L, L->top - L->base >= nargs);
+
     int status;
     if (L->status != LUA_YIELD && L->status != LUA_BREAK && (L->status != 0 || L->ci != L->base_ci))
         return resume_error(L, "cannot resume non-suspended coroutine", nargs);
@@ -511,6 +501,8 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
 
 int lua_resumeerror(lua_State* L, lua_State* from)
 {
+    api_check(L, L->top - L->base >= 1);
+
     int status;
     if (L->status != LUA_YIELD && L->status != LUA_BREAK && (L->status != 0 || L->ci != L->base_ci))
         return resume_error(L, "cannot resume non-suspended coroutine", 1);
