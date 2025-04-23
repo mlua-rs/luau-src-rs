@@ -222,6 +222,7 @@ impl Build {
                 compiler_lib_name.to_string(),
                 ast_lib_name.to_string(),
                 custom_lib_name.to_string(),
+                require_lib_name.to_string(),
             ],
             cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
         };
