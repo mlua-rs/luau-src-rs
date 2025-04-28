@@ -279,13 +279,13 @@ impl Artifacts {
     pub fn print_cargo_metadata(&self) {
         println!("cargo:rustc-link-search=native={}", self.lib_dir.display());
         for lib in &self.libs {
-            println!("cargo:rustc-link-lib=static={}", lib);
+            println!("cargo:rustc-link-lib=static={lib}");
         }
         if let Some(ref cpp_stdlib) = self.cpp_stdlib {
-            println!("cargo:rustc-link-lib={}", cpp_stdlib);
+            println!("cargo:rustc-link-lib={cpp_stdlib}");
         }
         if let Some(version) = self.version() {
-            println!("cargo:rustc-env=LUAU_VERSION={}", version);
+            println!("cargo:rustc-env=LUAU_VERSION={version}");
         }
     }
 
