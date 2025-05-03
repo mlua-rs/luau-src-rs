@@ -25,7 +25,7 @@ pub struct Artifacts {
 impl Default for Build {
     fn default() -> Self {
         Build {
-            out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("luau-build")),
+            out_dir: env::var_os("OUT_DIR").map(PathBuf::from),
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
             max_cstack_size: 1000000,
@@ -46,11 +46,13 @@ impl Build {
         self
     }
 
+    #[doc(hidden)]
     pub fn target(&mut self, target: &str) -> &mut Build {
         self.target = Some(target.to_string());
         self
     }
 
+    #[doc(hidden)]
     pub fn host(&mut self, host: &str) -> &mut Build {
         self.host = Some(host.to_string());
         self
@@ -72,15 +74,16 @@ impl Build {
     }
 
     pub fn set_vector_size(&mut self, size: usize) -> &mut Build {
-        assert!(size == 3 || size == 4);
+        assert!(size == 3 || size == 4, "vector size must be 3 or 4");
         self.vector_size = size;
         self
     }
 
     pub fn build(&mut self) -> Artifacts {
-        let target = &self.target.as_ref().expect("TARGET not set")[..];
-        let host = &self.host.as_ref().expect("HOST not set")[..];
-        let out_dir = self.out_dir.as_ref().expect("OUT_DIR not set");
+        let target = &self.target.as_ref().expect("TARGET is not set")[..];
+        let host = &self.host.as_ref().expect("HOST is not set")[..];
+        let out_dir = self.out_dir.as_ref().expect("OUT_DIR is not set");
+        let build_dir = out_dir.join("luau-build");
 
         let source_base_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let common_include_dir = source_base_dir.join("luau").join("Common").join("include");
@@ -88,15 +91,13 @@ impl Build {
         let vm_include_dir = source_base_dir.join("luau").join("VM").join("include");
 
         // Cleanup
-        if out_dir.exists() {
-            fs::remove_dir_all(out_dir).unwrap();
+        if build_dir.exists() {
+            fs::remove_dir_all(&build_dir).unwrap();
         }
 
         // Configure C++
         let mut config = cc::Build::new();
         config
-            .target(target)
-            .host(host)
             .warnings(false)
             .cargo_metadata(false)
             .std("c++17")
@@ -117,9 +118,9 @@ impl Build {
             config.define("LUA_USE_LONGJMP", "1");
         }
 
-        if cfg!(not(debug_assertions)) {
-            config.define("NDEBUG", None);
-            config.opt_level(2);
+        if cfg!(debug_assertions) {
+            config.define("LUAU_ENABLE_ASSERT", None);
+        } else {
             // this flag allows compiler to lower sqrt() into a single CPU instruction
             config.flag_if_supported("-fno-math-errno");
         }
@@ -134,7 +135,7 @@ impl Build {
             .clone()
             .include(&ast_include_dir)
             .add_files_by_ext(&ast_source_dir, "cpp")
-            .out_dir(out_dir)
+            .out_dir(&build_dir)
             .compile(ast_lib_name);
 
         // Build `CogeGen` library
@@ -153,7 +154,7 @@ impl Build {
                 .include(&vm_source_dir)
                 .define("LUACODEGEN_API", "extern \"C\"")
                 .add_files_by_ext(&codegen_source_dir, "cpp")
-                .out_dir(out_dir)
+                .out_dir(&build_dir)
                 .compile(codegen_lib_name);
         }
 
@@ -167,7 +168,7 @@ impl Build {
             .include(&ast_include_dir)
             .define("LUACODE_API", "extern \"C\"")
             .add_files_by_ext(&compiler_source_dir, "cpp")
-            .out_dir(out_dir)
+            .out_dir(&build_dir)
             .compile(compiler_lib_name);
 
         // Build customization library
@@ -178,7 +179,7 @@ impl Build {
             .include(&vm_include_dir)
             .include(&vm_source_dir)
             .add_files_by_ext(&custom_source_dir, "cpp")
-            .out_dir(out_dir)
+            .out_dir(&build_dir)
             .compile(custom_lib_name);
 
         // Build `Require` library
@@ -203,7 +204,7 @@ impl Build {
         require_config
             .include(&ast_include_dir)
             .include(&vm_include_dir)
-            .out_dir(out_dir)
+            .out_dir(&build_dir)
             .compile(require_lib_name);
 
         // Build VM
@@ -212,11 +213,11 @@ impl Build {
             .clone()
             .include(&vm_include_dir)
             .add_files_by_ext(&vm_source_dir, "cpp")
-            .out_dir(out_dir)
+            .out_dir(&build_dir)
             .compile(vm_lib_name);
 
         let mut artifacts = Artifacts {
-            lib_dir: out_dir.to_path_buf(),
+            lib_dir: build_dir,
             libs: vec![
                 vm_lib_name.to_string(),
                 compiler_lib_name.to_string(),
