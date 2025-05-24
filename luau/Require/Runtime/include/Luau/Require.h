@@ -83,14 +83,14 @@ struct luarequire_Configuration
     // Returns whether the context is currently pointing at a module.
     bool (*is_module_present)(lua_State* L, void* ctx);
 
-    // Provides the contents of the current module. This function is only called
-    // if is_module_present returns true.
-    luarequire_WriteResult (*get_contents)(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out);
-
     // Provides a chunkname for the current module. This will be accessible
     // through the debug library. This function is only called if
     // is_module_present returns true.
     luarequire_WriteResult (*get_chunkname)(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out);
+
+    // Provides a loadname that identifies the current module and is passed to
+    // load. This function is only called if is_module_present returns true.
+    luarequire_WriteResult (*get_loadname)(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out);
 
     // Provides a cache key representing the current module. This function is
     // only called if is_module_present returns true.
@@ -101,15 +101,25 @@ struct luarequire_Configuration
     // configuration file is present or NAVIGATE_FAILURE is returned (at root).
     bool (*is_config_present)(lua_State* L, void* ctx);
 
+    // Parses the configuration file in the current context for the given alias
+    // and returns its value or WRITE_FAILURE if not found. This function is
+    // only called if is_config_present returns true. If this function pointer
+    // is set, get_config must not be set. Opting in to this function pointer
+    // disables parsing configuration files internally and can be used for finer
+    // control over the configuration file parsing process.
+    luarequire_WriteResult (*get_alias)(lua_State* L, void* ctx, const char* alias, char* buffer, size_t buffer_size, size_t* size_out);
+
     // Provides the contents of the configuration file in the current context.
-    // This function is only called if is_config_present returns true.
+    // This function is only called if is_config_present returns true. If this
+    // function pointer is set, get_alias must not be set. Opting in to this
+    // function pointer enables parsing configuration files internally.
     luarequire_WriteResult (*get_config)(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out);
 
     // Executes the module and places the result on the stack. Returns the
     // number of results placed on the stack. Returning -1 directs the requiring
     // thread to yield. In this case, this thread should be resumed with the
     // module result pushed onto its stack.
-    int (*load)(lua_State* L, void* ctx, const char* path, const char* chunkname, const char* contents);
+    int (*load)(lua_State* L, void* ctx, const char* path, const char* chunkname, const char* loadname);
 };
 
 // Populates function pointers in the given luarequire_Configuration.
