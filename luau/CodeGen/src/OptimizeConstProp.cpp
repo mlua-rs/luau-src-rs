@@ -504,7 +504,7 @@ struct ConstPropState
 
     // Heap changes might affect table state
     std::vector<NumberedInstruction> getSlotNodeCache; // Additionally, pcpos argument might be different
-    std::vector<uint32_t> checkSlotMatchCache; // Additionally, fallback block argument might be different
+    std::vector<uint32_t> checkSlotMatchCache;         // Additionally, fallback block argument might be different
 
     std::vector<uint32_t> getArrAddrCache;
     std::vector<uint32_t> checkArraySizeCache; // Additionally, fallback block argument might be different
@@ -1325,6 +1325,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::ABS_NUM:
     case IrCmd::SIGN_NUM:
     case IrCmd::SELECT_NUM:
+    case IrCmd::SELECT_VEC:
     case IrCmd::NOT_ANY:
         state.substituteOrRecord(inst, index);
         break;

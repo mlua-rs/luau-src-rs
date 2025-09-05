@@ -1,6 +1,6 @@
 [package]
 name = "luau0-src"
-version = "0.15.6+luau688"
+version = "0.15.7+luau690"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 edition = "2021"
 repository = "https://github.com/mlua-rs/luau-src-rs"
