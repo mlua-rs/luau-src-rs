@@ -134,7 +134,7 @@ impl Build {
         config
             .clone()
             .include(&ast_include_dir)
-            .add_files_by_ext(&ast_source_dir, "cpp")
+            .add_files_by_ext_sorted(&ast_source_dir, "cpp")
             .out_dir(&build_dir)
             .compile(ast_lib_name);
 
@@ -153,7 +153,7 @@ impl Build {
                 .include(&vm_include_dir)
                 .include(&vm_source_dir)
                 .define("LUACODEGEN_API", "extern \"C\"")
-                .add_files_by_ext(&codegen_source_dir, "cpp")
+                .add_files_by_ext_sorted(&codegen_source_dir, "cpp")
                 .out_dir(&build_dir)
                 .compile(codegen_lib_name);
         }
@@ -167,7 +167,7 @@ impl Build {
             .include(&compiler_include_dir)
             .include(&ast_include_dir)
             .define("LUACODE_API", "extern \"C\"")
-            .add_files_by_ext(&compiler_source_dir, "cpp")
+            .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
             .out_dir(&build_dir)
             .compile(compiler_lib_name);
 
@@ -178,7 +178,7 @@ impl Build {
             .clone()
             .include(&vm_include_dir)
             .include(&vm_source_dir)
-            .add_files_by_ext(&custom_source_dir, "cpp")
+            .add_files_by_ext_sorted(&custom_source_dir, "cpp")
             .out_dir(&build_dir)
             .compile(custom_lib_name);
 
@@ -199,7 +199,7 @@ impl Build {
         for (source_dir, include_dir) in require_source_dirs.iter().zip(require_include_dirs) {
             require_config
                 .include(include_dir)
-                .add_files_by_ext(source_dir, "cpp");
+                .add_files_by_ext_sorted(source_dir, "cpp");
         }
         require_config
             .include(&ast_include_dir)
@@ -212,7 +212,7 @@ impl Build {
         config
             .clone()
             .include(&vm_include_dir)
-            .add_files_by_ext(&vm_source_dir, "cpp")
+            .add_files_by_ext_sorted(&vm_source_dir, "cpp")
             .out_dir(&build_dir)
             .compile(vm_lib_name);
 
@@ -298,18 +298,28 @@ impl Artifacts {
 }
 
 trait AddFilesByExt {
-    fn add_files_by_ext(&mut self, dir: &Path, ext: &str) -> &mut Self;
+    fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> &mut Self;
 }
 
 impl AddFilesByExt for cc::Build {
-    fn add_files_by_ext(&mut self, dir: &Path, ext: &str) -> &mut Self {
-        for entry in fs::read_dir(dir)
+    // It's important to keep the order of the files to get consistent builds between machines
+    // if the order is not always the same, the final binary produces a different SHA256 which
+    // might cause issues if one needs to verify which binary is being executed
+    fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> &mut Self {
+        let mut sources: Vec<_> = fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension() == Some(ext.as_ref()))
-        {
-            self.file(entry.path());
+            .map(|e| e.path())
+            .collect();
+
+        // Sort for determinism
+        sources.sort();
+
+        for source in sources {
+            self.file(source);
         }
+
         self
     }
 }
