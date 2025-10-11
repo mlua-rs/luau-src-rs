@@ -1,5 +1,6 @@
 #include "lua.h"
 #include "lapi.h"
+#include "lgc.h"
 #include "lobject.h"
 #include "lstate.h"
 
@@ -18,4 +19,9 @@ extern "C" const void* lua_getmetatablepointer(lua_State* L, int objindex)
     default:
         return NULL;
     }
+}
+
+extern "C" void lua_gcdump(lua_State* L, void* file, const char* (*categoryName)(lua_State* L, uint8_t memcat))
+{
+    luaC_dump(L, file, categoryName);
 }
