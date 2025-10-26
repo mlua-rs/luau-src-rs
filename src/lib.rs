@@ -138,7 +138,7 @@ impl Build {
             .out_dir(&build_dir)
             .compile(ast_lib_name);
 
-        // Build `CogeGen` library
+        // Build `CodeGen` library
         let codegen_lib_name = "luaucodegen";
         let codegen_source_dir = source_base_dir.join("luau").join("CodeGen").join("src");
         let codegen_include_dir = source_base_dir.join("luau").join("CodeGen").join("include");
@@ -171,6 +171,20 @@ impl Build {
             .out_dir(&build_dir)
             .compile(compiler_lib_name);
 
+        // Build `Config` library
+        let config_lib_name = "luauconfig";
+        let config_source_dir = source_base_dir.join("luau").join("Config").join("src");
+        let config_include_dir = source_base_dir.join("luau").join("Config").join("include");
+        config
+            .clone()
+            .include(&config_include_dir)
+            .include(&ast_include_dir)
+            .include(&compiler_include_dir)
+            .include(&vm_include_dir)
+            .add_files_by_ext_sorted(&config_source_dir, "cpp")
+            .out_dir(&build_dir)
+            .compile(config_lib_name);
+
         // Build customization library
         let custom_lib_name = "luaucustom";
         let custom_source_dir = source_base_dir.join("luau").join("Custom").join("src");
@@ -188,12 +202,10 @@ impl Build {
         let require_source_dirs = &[
             require_base_dir.join("Navigator").join("src"),
             require_base_dir.join("Runtime").join("src"),
-            source_base_dir.join("luau").join("Config").join("src"),
         ];
         let require_include_dirs = &[
             require_base_dir.join("Navigator").join("include"),
             require_base_dir.join("Runtime").join("include"),
-            source_base_dir.join("luau").join("Config").join("include"),
         ];
         let mut require_config = config.clone();
         for (source_dir, include_dir) in require_source_dirs.iter().zip(require_include_dirs) {
@@ -203,6 +215,7 @@ impl Build {
         }
         require_config
             .include(&ast_include_dir)
+            .include(&config_include_dir)
             .include(&vm_include_dir)
             .out_dir(&build_dir)
             .compile(require_lib_name);
@@ -223,6 +236,7 @@ impl Build {
                 compiler_lib_name.to_string(),
                 ast_lib_name.to_string(),
                 custom_lib_name.to_string(),
+                config_lib_name.to_string(),
                 require_lib_name.to_string(),
             ],
             cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
