@@ -21,7 +21,7 @@ pub struct lua_CompileOptions {
     disabledBuiltins: *const *const c_char,
 }
 
-extern "C" {
+unsafe extern "C" {
     pub fn free(ptr: *mut c_void);
 
     pub fn luaL_newstate() -> *mut c_void;
@@ -65,7 +65,7 @@ extern "C" {
 }
 
 #[cfg(not(target_os = "emscripten"))]
-extern "C" {
+unsafe extern "C" {
     pub fn luau_codegen_supported() -> c_int;
     pub fn luau_codegen_create(state: *mut c_void);
     pub fn luau_codegen_compile(state: *mut c_void, idx: c_int);
