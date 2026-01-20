@@ -1,5 +1,4 @@
-#![allow(clippy::missing_safety_doc)]
-#![allow(non_snake_case, non_camel_case_types)]
+#![allow(unsafe_op_in_unsafe_fn, non_snake_case, clippy::missing_safety_doc)]
 
 use std::os::raw::{c_char, c_int, c_long, c_void};
 

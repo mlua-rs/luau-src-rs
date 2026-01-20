@@ -2,7 +2,7 @@
 name = "luau0-src"
 version = "0.17.1+luau702"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
-edition = "2021"
+edition = "2024"
 repository = "https://github.com/mlua-rs/luau-src-rs"
 keywords = ["lua", "luau", "roblox"]
 readme = "README.md"
