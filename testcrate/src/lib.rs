@@ -77,6 +77,7 @@ pub unsafe fn lua_getglobal(state: *mut c_void, k: *const c_char) {
 pub unsafe fn to_string<'a>(state: *mut c_void, index: c_int) -> &'a str {
     let mut len: c_long = 0;
     let ptr = lua_tolstring(state, index, &mut len);
+    assert!(!ptr.is_null());
     let bytes = std::slice::from_raw_parts(ptr as *const u8, len as usize);
     std::str::from_utf8(bytes).unwrap()
 }
