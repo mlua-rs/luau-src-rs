@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Represents the configuration for building Luau artifacts.
 pub struct Build {
     out_dir: Option<PathBuf>,
     target: Option<String>,
@@ -16,6 +17,7 @@ pub struct Build {
     vector_size: usize,
 }
 
+/// Represents the artifacts produced by the build process.
 pub struct Artifacts {
     lib_dir: PathBuf,
     libs: Vec<String>,
@@ -37,48 +39,69 @@ impl Default for Build {
 }
 
 impl Build {
+    /// Creates a new `Build` instance with default settings.
     pub fn new() -> Build {
         Build::default()
     }
 
+    /// Sets the output directory for the build artifacts.
+    ///
+    /// Default is the environment variable `OUT_DIR`.
     pub fn out_dir<P: AsRef<Path>>(&mut self, path: P) -> &mut Build {
         self.out_dir = Some(path.as_ref().to_path_buf());
         self
     }
 
-    #[doc(hidden)]
+    /// Sets the target architecture for the build.
+    ///
+    /// Default is the environment variable `TARGET`.
     pub fn target(&mut self, target: &str) -> &mut Build {
         self.target = Some(target.to_string());
         self
     }
 
-    #[doc(hidden)]
+    /// Sets the host architecture for the build.
+    ///
+    /// Default is the environment variable `HOST`.
     pub fn host(&mut self, host: &str) -> &mut Build {
         self.host = Some(host.to_string());
         self
     }
 
+    /// Sets the maximum number of Lua stack slots that a C function can use.
+    ///
+    /// Default is 1,000,000.
     pub fn set_max_cstack_size(&mut self, size: usize) -> &mut Build {
         self.max_cstack_size = size;
         self
     }
 
+    /// Sets whether to use longjmp instead of C++ exceptions.
+    ///
+    /// Default is false.
     pub fn use_longjmp(&mut self, r#use: bool) -> &mut Build {
         self.use_longjmp = r#use;
         self
     }
 
+    /// Sets whether to enable the code generator (JIT).
+    ///
+    /// Default is false.
     pub fn enable_codegen(&mut self, enable: bool) -> &mut Build {
         self.enable_codegen = enable;
         self
     }
 
+    /// Sets the vector size (3 or 4).
+    ///
+    /// Default is 3.
     pub fn set_vector_size(&mut self, size: usize) -> &mut Build {
         assert!(size == 3 || size == 4, "vector size must be 3 or 4");
         self.vector_size = size;
         self
     }
 
+    /// Builds the Lua artifacts for the specified version.
     pub fn build(&mut self) -> Artifacts {
         let target = &self.target.as_ref().expect("TARGET is not set")[..];
         let host = &self.host.as_ref().expect("HOST is not set")[..];
