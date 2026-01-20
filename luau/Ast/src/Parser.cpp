@@ -19,9 +19,7 @@ LUAU_FASTINTVARIABLE(LuauParseErrorLimit, 100)
 // See docs/SyntaxChanges.md for an explanation.
 LUAU_FASTFLAGVARIABLE(LuauSolverV2)
 LUAU_DYNAMIC_FASTFLAGVARIABLE(DebugLuauReportReturnTypeVariadicWithTypeSuffix, false)
-LUAU_FASTFLAGVARIABLE(DebugLuauStringSingletonBasedOnQuotes)
-LUAU_FASTFLAGVARIABLE(LuauExplicitTypeExpressionInstantiation)
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteAttributes)
+LUAU_FASTFLAGVARIABLE(LuauExplicitTypeInstantiationSyntax)
 LUAU_FASTFLAG(LuauStandaloneParseType)
 LUAU_FASTFLAGVARIABLE(LuauCstStatDoWithStatsStart)
 
@@ -951,15 +949,7 @@ void Parser::parseAttribute(TempVector<AstAttr*>& attributes)
 
         nextLexeme();
 
-        if (FFlag::LuauAutocompleteAttributes)
-        {
-            attributes.push_back(allocator.alloc<AstAttr>(loc, type.value_or(AstAttr::Type::Unknown), empty, AstName(name)));
-        }
-        else
-        {
-            if (type)
-                attributes.push_back(allocator.alloc<AstAttr>(loc, *type, empty));
-        }
+        attributes.push_back(allocator.alloc<AstAttr>(loc, type.value_or(AstAttr::Type::Unknown), empty, AstName(name)));
     }
     else
     {
@@ -989,30 +979,14 @@ void Parser::parseAttribute(TempVector<AstAttr*>& attributes)
 
                     std::optional<AstAttr::Type> type = validateAttribute(nameLoc, attrName, attributes, args);
 
-                    if (FFlag::LuauAutocompleteAttributes)
-                    {
-                        attributes.push_back(
-                            allocator.alloc<AstAttr>(Location(nameLoc, argsLocation), type.value_or(AstAttr::Type::Unknown), args, AstName(attrName))
-                        );
-                    }
-                    else
-                    {
-                        if (type)
-                            attributes.push_back(allocator.alloc<AstAttr>(Location(nameLoc, argsLocation), *type, args));
-                    }
+                    attributes.push_back(
+                        allocator.alloc<AstAttr>(Location(nameLoc, argsLocation), type.value_or(AstAttr::Type::Unknown), args, AstName(attrName))
+                    );
                 }
                 else
                 {
                     std::optional<AstAttr::Type> type = validateAttribute(nameLoc, attrName, attributes, empty);
-                    if (FFlag::LuauAutocompleteAttributes)
-                    {
-                        attributes.push_back(allocator.alloc<AstAttr>(nameLoc, type.value_or(AstAttr::Type::Unknown), empty, AstName(attrName)));
-                    }
-                    else
-                    {
-                        if (type)
-                            attributes.push_back(allocator.alloc<AstAttr>(nameLoc, *type, empty));
-                    }
+                    attributes.push_back(allocator.alloc<AstAttr>(nameLoc, type.value_or(AstAttr::Type::Unknown), empty, AstName(attrName)));
                 }
 
                 if (lexer.current().type == ',')
@@ -1029,13 +1003,10 @@ void Parser::parseAttribute(TempVector<AstAttr*>& attributes)
         {
             report(Location(open.location, lexer.current().location), "Attribute list cannot be empty");
 
-            if (FFlag::LuauAutocompleteAttributes)
-            {
-                // autocomplete expects at least one unknown attribute.
-                attributes.push_back(
-                    allocator.alloc<AstAttr>(Location(open.location, lexer.current().location), AstAttr::Type::Unknown, empty, nameError)
-                );
-            }
+            // autocomplete expects at least one unknown attribute.
+            attributes.push_back(
+                allocator.alloc<AstAttr>(Location(open.location, lexer.current().location), AstAttr::Type::Unknown, empty, nameError)
+            );
         }
 
         expectMatchAndConsume(']', open);
@@ -3115,7 +3086,7 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
         {
             expr = parseFunctionArgs(expr, false);
         }
-        else if (FFlag::LuauExplicitTypeExpressionInstantiation && lexer.current().type == '<' && lexer.lookahead().type == '<')
+        else if (FFlag::LuauExplicitTypeInstantiationSyntax && lexer.current().type == '<' && lexer.lookahead().type == '<')
         {
             expr = parseExplicitTypeInstantiationExpr(start, *expr);
         }
@@ -3141,7 +3112,7 @@ AstExpr* Parser::parseMethodCall(Position start, AstExpr* expr)
     Name index = parseIndexName("method name", opPosition);
     AstExpr* func = allocator.alloc<AstExprIndexName>(Location(start, index.location.end), expr, index.name, index.location, opPosition, ':');
 
-    if (FFlag::LuauExplicitTypeExpressionInstantiation)
+    if (FFlag::LuauExplicitTypeInstantiationSyntax)
     {
         AstArray<AstTypeOrPack> typeArguments;
         CstTypeInstantiation* cstTypeArguments = options.storeCstData ? allocator.alloc<CstTypeInstantiation>() : nullptr;
@@ -3949,38 +3920,17 @@ AstExpr* Parser::parseString()
     Location location = lexer.current().location;
 
     AstExprConstantString::QuoteStyle style;
-    if (FFlag::DebugLuauStringSingletonBasedOnQuotes)
+    switch (lexer.current().type)
     {
-        switch (lexer.current().type)
-        {
-        case Lexeme::InterpStringSimple:
-            style = AstExprConstantString::QuotedSimple;
-            break;
-        case Lexeme::RawString:
-            style = AstExprConstantString::QuotedRaw;
-            break;
-        case Lexeme::QuotedString:
-            style = lexer.current().getQuoteStyle() == Lexeme::QuoteStyle::Single ? AstExprConstantString::QuotedSingle
-                                                                                  : AstExprConstantString::QuotedSimple;
-            break;
-        default:
-            LUAU_ASSERT(false && "Invalid string type");
-        }
-    }
-    else
-    {
-        switch (lexer.current().type)
-        {
-        case Lexeme::QuotedString:
-        case Lexeme::InterpStringSimple:
-            style = AstExprConstantString::QuotedSimple;
-            break;
-        case Lexeme::RawString:
-            style = AstExprConstantString::QuotedRaw;
-            break;
-        default:
-            LUAU_ASSERT(false && "Invalid string type");
-        }
+    case Lexeme::QuotedString:
+    case Lexeme::InterpStringSimple:
+        style = AstExprConstantString::QuotedSimple;
+        break;
+    case Lexeme::RawString:
+        style = AstExprConstantString::QuotedRaw;
+        break;
+    default:
+        LUAU_ASSERT(false && "Invalid string type");
     }
 
     CstExprConstantString::QuoteStyle fullStyle;
@@ -4142,7 +4092,7 @@ LUAU_NOINLINE AstExpr* Parser::parseExplicitTypeInstantiationExpr(Position start
 
 AstArray<AstTypeOrPack> Parser::parseTypeInstantiationExpr(CstTypeInstantiation* cstNodeOut, Location* endLocationOut)
 {
-    LUAU_ASSERT(FFlag::LuauExplicitTypeExpressionInstantiation);
+    LUAU_ASSERT(FFlag::LuauExplicitTypeInstantiationSyntax);
 
     LUAU_ASSERT(lexer.current().type == '<' && lexer.lookahead().type == '<');
 

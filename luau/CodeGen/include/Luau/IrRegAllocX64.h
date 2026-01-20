@@ -70,6 +70,9 @@ struct IrRegAllocX64
 
     uint32_t findInstructionWithFurthestNextUse(const std::array<uint32_t, 16>& regInstUsers) const;
 
+    bool isExtraSpillSlot(unsigned slot) const;
+    int getExtraSpillAddressOffset(unsigned slot) const;
+
     void assertFree(RegisterX64 reg) const;
     void assertAllFree() const;
     void assertNoSpills() const;
@@ -86,8 +89,10 @@ struct IrRegAllocX64
     std::array<uint32_t, 16> xmmInstUsers;
     uint8_t usableXmmRegCount = 0;
 
-    std::bitset<256> usedSpillSlots;
-    unsigned maxUsedSlot = 0;
+    std::bitset<256> usedSpillSlots_DEPRECATED;
+    std::bitset<512> usedSpillSlotHalfs; // A bit for every stack slot split in 4 byte halfs
+    unsigned maxUsedSlot = 0;            // Maximum number of 8 byte stack slots used
+
     unsigned nextSpillId = 1;
     std::vector<IrSpillX64> spills;
 };
