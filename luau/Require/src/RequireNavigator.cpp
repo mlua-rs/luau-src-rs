@@ -42,12 +42,6 @@ Navigator::Status Navigator::navigate(std::string path)
 {
     std::replace(path.begin(), path.end(), '\\', '/');
 
-    if (Error error = resetToRequirer())
-    {
-        errorHandler.reportError(*error);
-        return Status::ErrorReported;
-    }
-
     if (Error error = navigateImpl(path))
     {
         errorHandler.reportError(*error);
@@ -76,6 +70,21 @@ Error Navigator::navigateImpl(std::string_view path)
                 return ('A' <= c && c <= 'Z') ? (c + ('a' - 'A')) : c;
             }
         );
+
+        if (auto [error, wasOverridden] = toAliasOverride(alias); error)
+        {
+            return error;
+        }
+        else if (wasOverridden)
+        {
+            if (Error error = navigateThroughPath(path))
+                return error;
+
+            return std::nullopt;
+        }
+
+        if (Error error = resetToRequirer())
+            return error;
 
         Config config;
         if (Error error = navigateToAndPopulateConfig(alias, config))
@@ -115,6 +124,8 @@ Error Navigator::navigateImpl(std::string_view path)
 
     if (pathType == PathType::RelativeToCurrent || pathType == PathType::RelativeToParent)
     {
+        if (Error error = resetToRequirer())
+            return error;
         if (Error error = navigateToParent(std::nullopt))
             return error;
         if (Error error = navigateThroughPath(path))
@@ -176,6 +187,19 @@ Error Navigator::navigateToAlias(const std::string& alias, const Config& config,
             return error;
 
         std::string nextAlias = extractAlias(value);
+
+        if (auto [error, wasOverridden] = toAliasOverride(nextAlias); error)
+        {
+            return error;
+        }
+        else if (wasOverridden)
+        {
+            if (Error error = navigateThroughPath(value))
+                return error;
+
+            return std::nullopt;
+        }
+
         if (config.aliases.contains(nextAlias))
         {
             if (Error error = navigateToAlias(nextAlias, config, std::move(cycleTracker)))
@@ -272,7 +296,7 @@ Error Navigator::navigateToAndPopulateConfig(const std::string& desiredAlias, Co
 
 Error Navigator::resetToRequirer()
 {
-    NavigationContext::NavigateResult result = navigationContext.reset(navigationContext.getRequirerIdentifier());
+    NavigationContext::NavigateResult result = navigationContext.resetToRequirer();
     if (result == NavigationContext::NavigateResult::Success)
         return std::nullopt;
 
@@ -320,6 +344,24 @@ Error Navigator::navigateToChild(const std::string& component)
     if (result == NavigationContext::NavigateResult::Ambiguous)
         errorMessage += " (ambiguous)";
     return errorMessage;
+}
+
+std::pair<Error, bool> Navigator::toAliasOverride(const std::string& aliasUnprefixed)
+{
+    std::pair<Error, bool> result;
+    switch (navigationContext.toAliasOverride(aliasUnprefixed))
+    {
+    case NavigationContext::NavigateResult::Success:
+        result = {std::nullopt, true};
+        break;
+    case NavigationContext::NavigateResult::NotFound:
+        result = {std::nullopt, false};
+        break;
+    case NavigationContext::NavigateResult::Ambiguous:
+        result = {"@" + aliasUnprefixed + " is not a valid alias (ambiguous)", false};
+        break;
+    }
+    return result;
 }
 
 Error Navigator::toAliasFallback(const std::string& aliasUnprefixed)

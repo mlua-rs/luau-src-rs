@@ -29,11 +29,11 @@ class RuntimeNavigationContext : public NavigationContext
 public:
     RuntimeNavigationContext(luarequire_Configuration* config, lua_State* L, void* ctx, std::string requirerChunkname);
 
-    std::string getRequirerIdentifier() const override;
-
     // Navigation interface
-    NavigateResult reset(const std::string& requirerChunkname) override;
+    NavigateResult resetToRequirer() override;
     NavigateResult jumpToAlias(const std::string& path) override;
+
+    NavigateResult toAliasOverride(const std::string& aliasUnprefixed) override;
     NavigateResult toAliasFallback(const std::string& aliasUnprefixed) override;
 
     NavigateResult toParent() override;

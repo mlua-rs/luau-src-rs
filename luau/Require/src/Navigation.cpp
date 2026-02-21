@@ -59,12 +59,7 @@ RuntimeNavigationContext::RuntimeNavigationContext(luarequire_Configuration* con
     };
 }
 
-std::string RuntimeNavigationContext::getRequirerIdentifier() const
-{
-    return requirerChunkname;
-}
-
-NavigationContext::NavigateResult RuntimeNavigationContext::reset(const std::string& requirerChunkname)
+NavigationContext::NavigateResult RuntimeNavigationContext::resetToRequirer()
 {
     return convertNavigateResult(config->reset(L, ctx, requirerChunkname.c_str()));
 }
@@ -72,6 +67,13 @@ NavigationContext::NavigateResult RuntimeNavigationContext::reset(const std::str
 NavigationContext::NavigateResult RuntimeNavigationContext::jumpToAlias(const std::string& path)
 {
     return convertNavigateResult(config->jump_to_alias(L, ctx, path.c_str()));
+}
+
+NavigationContext::NavigateResult RuntimeNavigationContext::toAliasOverride(const std::string& aliasUnprefixed)
+{
+    if (!config->to_alias_override)
+        return NavigationContext::NavigateResult::NotFound;
+    return convertNavigateResult(config->to_alias_override(L, ctx, aliasUnprefixed.c_str()));
 }
 
 NavigationContext::NavigateResult RuntimeNavigationContext::toAliasFallback(const std::string& aliasUnprefixed)

@@ -1,5 +1,4 @@
-#![allow(clippy::missing_safety_doc)]
-#![allow(non_snake_case, non_camel_case_types)]
+#![allow(unsafe_op_in_unsafe_fn, non_snake_case, clippy::missing_safety_doc)]
 
 use std::os::raw::{c_char, c_int, c_long, c_void};
 
@@ -78,6 +77,7 @@ pub unsafe fn lua_getglobal(state: *mut c_void, k: *const c_char) {
 pub unsafe fn to_string<'a>(state: *mut c_void, index: c_int) -> &'a str {
     let mut len: c_long = 0;
     let ptr = lua_tolstring(state, index, &mut len);
+    assert!(!ptr.is_null());
     let bytes = std::slice::from_raw_parts(ptr as *const u8, len as usize);
     std::str::from_utf8(bytes).unwrap()
 }

@@ -25,8 +25,6 @@
 #endif
 #endif
 
-LUAU_FASTFLAG(LuauVectorLerp)
-
 // luauF functions implement FASTCALL instruction that performs a direct execution of some builtin functions from the VM
 // The rule of thumb is that FASTCALL functions can not call user code, yield, fail, or reallocate stack.
 // If types of the arguments mismatch, luauF_* needs to return -1 and the execution will fall back to the usual call path
@@ -1705,7 +1703,7 @@ static int luauF_vectormax(lua_State* L, StkId res, TValue* arg0, int nresults, 
 
 static int luauF_vectorlerp(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (FFlag::LuauVectorLerp && nparams >= 3 && nresults <= 1 && ttisvector(arg0) && ttisvector(args) && ttisnumber(args + 1))
+    if (nparams >= 3 && nresults <= 1 && ttisvector(arg0) && ttisvector(args) && ttisnumber(args + 1))
     {
         const float* a = vvalue(arg0);
         const float* b = vvalue(args);
@@ -1841,7 +1839,7 @@ static bool luau_hassse41()
     __cpuid(1, cpuinfo[0], cpuinfo[1], cpuinfo[2], cpuinfo[3]);
 #endif
 
-    // We requre SSE4.1 support for ROUNDSD
+    // We require SSE4.1 support for ROUNDSD
     // https://en.wikipedia.org/wiki/CPUID#EAX=1:_Processor_Info_and_Feature_Bits
     return (cpuinfo[2] & (1 << 19)) != 0;
 }

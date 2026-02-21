@@ -376,6 +376,9 @@ inline bool lowerFunction(
 
     markDeadStoresInBlockChains(ir);
 
+    // Recompute the CFG predecessors/successors to match block uses after optimizations
+    computeCfgBlockEdges(ir.function);
+
     std::vector<uint32_t> sortedBlocks = getSortedBlockOrder(ir.function);
 
     // In order to allocate registers during lowering, we need to know where instruction results are last used

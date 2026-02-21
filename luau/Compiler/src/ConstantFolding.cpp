@@ -2,14 +2,15 @@
 #include "ConstantFolding.h"
 
 #include "BuiltinFolding.h"
+#include "Luau/Bytecode.h"
 #include "Luau/Lexer.h"
 
 #include <vector>
 #include <math.h>
 
-LUAU_FASTFLAG(LuauExplicitTypeExpressionInstantiation)
-LUAU_FASTFLAGVARIABLE(LuauStringConstFolding2)
-LUAU_FASTFLAGVARIABLE(LuauInterpStringConstFolding)
+LUAU_FASTFLAG(LuauExplicitTypeInstantiationSyntax)
+LUAU_FASTFLAGVARIABLE(LuauCompileFoldVectorComp)
+LUAU_FASTFLAG(LuauCompileInlinedBuiltins)
 
 namespace Luau
 {
@@ -288,25 +289,24 @@ static void foldBinary(Constant& result, AstExprBinary::Op op, const Constant& l
         break;
 
     case AstExprBinary::Concat:
-        if (FFlag::LuauStringConstFolding2)
-            if (la.type == Constant::Type_String && ra.type == Constant::Type_String)
+        if (la.type == Constant::Type_String && ra.type == Constant::Type_String)
+        {
+            result.type = Constant::Type_String;
+            result.stringLength = la.stringLength + ra.stringLength;
+            if (la.stringLength == 0)
+                result.valueString = ra.valueString;
+            else if (ra.stringLength == 0)
+                result.valueString = la.valueString;
+            else
             {
-                result.type = Constant::Type_String;
-                result.stringLength = la.stringLength + ra.stringLength;
-                if (la.stringLength == 0)
-                    result.valueString = ra.valueString;
-                else if (ra.stringLength == 0)
-                    result.valueString = la.valueString;
-                else
-                {
-                    std::string tmp;
-                    tmp.reserve(result.stringLength + 1);
-                    tmp.append(la.valueString, la.stringLength);
-                    tmp.append(ra.valueString, ra.stringLength);
-                    AstName name = stringTable.getOrAdd(tmp.c_str(), result.stringLength);
-                    result.valueString = name.value;
-                }
+                std::string tmp;
+                tmp.reserve(result.stringLength + 1);
+                tmp.append(la.valueString, la.stringLength);
+                tmp.append(ra.valueString, ra.stringLength);
+                AstName name = stringTable.getOrAdd(tmp.c_str(), result.stringLength);
+                result.valueString = name.value;
             }
+        }
         break;
 
     case AstExprBinary::CompareNe:
@@ -502,52 +502,132 @@ struct ConstantVisitor : AstVisitor
         {
             analyze(expr->func);
 
-            if (const int* bfid = builtins ? builtins->find(expr) : nullptr)
+            if (FFlag::LuauCompileInlinedBuiltins)
             {
-                // since recursive calls to analyze() may reuse the vector we need to be careful and preserve existing contents
-                size_t offset = builtinArgs.size();
-                bool canFold = true;
+                const int* bfid = builtins ? builtins->find(expr) : nullptr;
 
-                builtinArgs.reserve(offset + expr->args.size);
-
-                for (size_t i = 0; i < expr->args.size; ++i)
+                if (bfid && *bfid != LBF_NONE)
                 {
-                    Constant ac = analyze(expr->args.data[i]);
+                    // since recursive calls to analyze() may reuse the vector we need to be careful and preserve existing contents
+                    size_t offset = builtinArgs.size();
+                    bool canFold = true;
 
-                    if (ac.type == Constant::Type_Unknown)
-                        canFold = false;
-                    else
-                        builtinArgs.push_back(ac);
+                    builtinArgs.reserve(offset + expr->args.size);
+
+                    for (size_t i = 0; i < expr->args.size; ++i)
+                    {
+                        Constant ac = analyze(expr->args.data[i]);
+
+                        if (ac.type == Constant::Type_Unknown)
+                            canFold = false;
+                        else
+                            builtinArgs.push_back(ac);
+                    }
+
+                    if (canFold)
+                    {
+                        LUAU_ASSERT(builtinArgs.size() == offset + expr->args.size);
+                        result = foldBuiltin(stringTable, *bfid, builtinArgs.data() + offset, expr->args.size);
+                    }
+
+                    builtinArgs.resize(offset);
                 }
-
-                if (canFold)
+                else
                 {
-                    LUAU_ASSERT(builtinArgs.size() == offset + expr->args.size);
-                    result = foldBuiltin(stringTable, *bfid, builtinArgs.data() + offset, expr->args.size);
+                    for (size_t i = 0; i < expr->args.size; ++i)
+                        analyze(expr->args.data[i]);
                 }
-
-                builtinArgs.resize(offset);
             }
             else
             {
-                for (size_t i = 0; i < expr->args.size; ++i)
-                    analyze(expr->args.data[i]);
+                if (const int* bfid = builtins ? builtins->find(expr) : nullptr)
+                {
+                    // since recursive calls to analyze() may reuse the vector we need to be careful and preserve existing contents
+                    size_t offset = builtinArgs.size();
+                    bool canFold = true;
+
+                    builtinArgs.reserve(offset + expr->args.size);
+
+                    for (size_t i = 0; i < expr->args.size; ++i)
+                    {
+                        Constant ac = analyze(expr->args.data[i]);
+
+                        if (ac.type == Constant::Type_Unknown)
+                            canFold = false;
+                        else
+                            builtinArgs.push_back(ac);
+                    }
+
+                    if (canFold)
+                    {
+                        LUAU_ASSERT(builtinArgs.size() == offset + expr->args.size);
+                        result = foldBuiltin(stringTable, *bfid, builtinArgs.data() + offset, expr->args.size);
+                    }
+
+                    builtinArgs.resize(offset);
+                }
+                else
+                {
+                    for (size_t i = 0; i < expr->args.size; ++i)
+                        analyze(expr->args.data[i]);
+                }
             }
         }
         else if (AstExprIndexName* expr = node->as<AstExprIndexName>())
         {
-            analyze(expr->expr);
-
-            if (foldLibraryK)
+            if (FFlag::LuauCompileFoldVectorComp)
             {
-                if (AstExprGlobal* eg = expr->expr->as<AstExprGlobal>())
-                {
-                    if (eg->name == "math")
-                        result = foldBuiltinMath(expr->index);
+                Constant value = analyze(expr->expr);
 
-                    // if we have a custom handler and the constant hasn't been resolved
-                    if (libraryMemberConstantCb && result.type == Constant::Type_Unknown)
-                        libraryMemberConstantCb(eg->name.value, expr->index.value, reinterpret_cast<Luau::CompileConstant*>(&result));
+                if (value.type == Constant::Type_Vector)
+                {
+                    if (expr->index == "x" || expr->index == "X")
+                    {
+                        result.type = Constant::Type_Number;
+                        result.valueNumber = value.valueVector[0];
+                    }
+                    else if (expr->index == "y" || expr->index == "Y")
+                    {
+                        result.type = Constant::Type_Number;
+                        result.valueNumber = value.valueVector[1];
+                    }
+                    else if (expr->index == "z" || expr->index == "Z")
+                    {
+                        result.type = Constant::Type_Number;
+                        result.valueNumber = value.valueVector[2];
+                    }
+
+                    // Do not handle 'w' component because it isn't known if the runtime will be configured in 3-wide or 4-wide mode
+                    // In 3-wide, access to 'w' will call unspecified metamethod or fail
+                }
+                else if (foldLibraryK)
+                {
+                    if (AstExprGlobal* eg = expr->expr->as<AstExprGlobal>())
+                    {
+                        if (eg->name == "math")
+                            result = foldBuiltinMath(expr->index);
+
+                        // if we have a custom handler and the constant hasn't been resolved
+                        if (libraryMemberConstantCb && result.type == Constant::Type_Unknown)
+                            libraryMemberConstantCb(eg->name.value, expr->index.value, reinterpret_cast<Luau::CompileConstant*>(&result));
+                    }
+                }
+            }
+            else
+            {
+                analyze(expr->expr);
+
+                if (foldLibraryK)
+                {
+                    if (AstExprGlobal* eg = expr->expr->as<AstExprGlobal>())
+                    {
+                        if (eg->name == "math")
+                            result = foldBuiltinMath(expr->index);
+
+                        // if we have a custom handler and the constant hasn't been resolved
+                        if (libraryMemberConstantCb && result.type == Constant::Type_Unknown)
+                            libraryMemberConstantCb(eg->name.value, expr->index.value, reinterpret_cast<Luau::CompileConstant*>(&result));
+                    }
                 }
             }
         }
@@ -606,25 +686,17 @@ struct ConstantVisitor : AstVisitor
         }
         else if (AstExprInterpString* expr = node->as<AstExprInterpString>())
         {
-            if (FFlag::LuauInterpStringConstFolding)
-            {
-                bool onlyConstantSubExpr = true;
-                for (AstExpr* expression : expr->expressions)
-                    if (analyze(expression).type != Constant::Type_String)
-                        onlyConstantSubExpr = false;
+            bool onlyConstantSubExpr = true;
+            for (AstExpr* expression : expr->expressions)
+                if (analyze(expression).type != Constant::Type_String)
+                    onlyConstantSubExpr = false;
 
-                if (onlyConstantSubExpr)
-                    foldInterpString(result, expr, constants, stringTable);
-            }
-            else
-            {
-                for (AstExpr* expression : expr->expressions)
-                    analyze(expression);
-            }
+            if (onlyConstantSubExpr)
+                foldInterpString(result, expr, constants, stringTable);
         }
         else if (AstExprInstantiate* expr = node->as<AstExprInstantiate>())
         {
-            LUAU_ASSERT(FFlag::LuauExplicitTypeExpressionInstantiation);
+            LUAU_ASSERT(FFlag::LuauExplicitTypeInstantiationSyntax);
             result = analyze(expr->expr);
         }
         else

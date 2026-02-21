@@ -10,6 +10,9 @@
 
 #include <algorithm>
 
+LUAU_FASTFLAG(LuauCodegenSetBlockEntryState2)
+LUAU_FASTFLAG(LuauCodegenLinearNonNumComp)
+
 namespace Luau
 {
 namespace CodeGen
@@ -106,6 +109,10 @@ void loadBytecodeTypeInfo(IrFunction& function)
             info.endpc = info.startpc + readVarInt(data, offset);
         }
     }
+
+    // Preserve original information
+    if (FFlag::LuauCodegenSetBlockEntryState2)
+        function.bcOriginalTypeInfo = function.bcTypeInfo;
 
     CODEGEN_ASSERT(offset == size_t(proto->sizetypeinfo));
 }
@@ -577,7 +584,7 @@ static void applyBuiltinCall(LuauBuiltinFunction bfid, BytecodeTypes& types)
 
 static HostMetamethod opcodeToHostMetamethod(LuauOpcode op)
 {
-    switch (op)
+    switch (int(op))
     {
     case LOP_ADD:
         return HostMetamethod::Add;
@@ -1337,12 +1344,25 @@ void analyzeBytecodeTypes(IrFunction& function, const HostIrHooks& hostHooks)
             case LOP_JUMPBACK:
             case LOP_JUMPIF:
             case LOP_JUMPIFNOT:
+                break;
             case LOP_JUMPIFEQ:
             case LOP_JUMPIFLE:
             case LOP_JUMPIFLT:
             case LOP_JUMPIFNOTEQ:
             case LOP_JUMPIFNOTLE:
             case LOP_JUMPIFNOTLT:
+            {
+                if (FFlag::LuauCodegenLinearNonNumComp)
+                {
+                    int ra = LUAU_INSN_A(*pc);
+                    int rb = pc[1];
+
+                    bcType.a = regTags[ra];
+                    bcType.b = regTags[rb];
+                }
+
+                break;
+            }
             case LOP_JUMPX:
             case LOP_JUMPXEQKNIL:
             case LOP_JUMPXEQKB:
