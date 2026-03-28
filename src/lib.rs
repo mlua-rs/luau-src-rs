@@ -127,9 +127,11 @@ impl Build {
             .cpp(true);
 
         if target.ends_with("emscripten") {
-            // Enable c++ exceptions for emscripten (it's disabled by default)
-            // Later we should switch to wasm exceptions
+            // cc-rs unconditionally adds `-fno-exceptions` for wasm32.
+            // We need to re-enable exceptions and switch to the
+            // wasm-native EH ABI that Rust's emscripten target uses.
             config.flag_if_supported("-fexceptions");
+            config.flag_if_supported("-fwasm-exceptions");
         }
 
         // Common defines
