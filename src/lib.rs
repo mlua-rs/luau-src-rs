@@ -109,9 +109,10 @@ impl Build {
         let build_dir = out_dir.join("luau-build");
 
         let source_base_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let common_include_dir = source_base_dir.join("luau").join("Common").join("include");
-        let vm_source_dir = source_base_dir.join("luau").join("VM").join("src");
-        let vm_include_dir = source_base_dir.join("luau").join("VM").join("include");
+        let luau_source_dir = source_base_dir.join("luau");
+        let common_include_dir = luau_source_dir.join("Common").join("include");
+        let vm_source_dir = luau_source_dir.join("VM").join("src");
+        let vm_include_dir = luau_source_dir.join("VM").join("include");
 
         // Cleanup
         if build_dir.exists() {
@@ -154,8 +155,8 @@ impl Build {
 
         // Build `Ast` library
         let ast_lib_name = "luauast";
-        let ast_source_dir = source_base_dir.join("luau").join("Ast").join("src");
-        let ast_include_dir = source_base_dir.join("luau").join("Ast").join("include");
+        let ast_source_dir = luau_source_dir.join("Ast").join("src");
+        let ast_include_dir = luau_source_dir.join("Ast").join("include");
         config
             .clone()
             .include(&ast_include_dir)
@@ -165,8 +166,8 @@ impl Build {
 
         // Build `CodeGen` library
         let codegen_lib_name = "luaucodegen";
-        let codegen_source_dir = source_base_dir.join("luau").join("CodeGen").join("src");
-        let codegen_include_dir = source_base_dir.join("luau").join("CodeGen").join("include");
+        let codegen_source_dir = luau_source_dir.join("CodeGen").join("src");
+        let codegen_include_dir = luau_source_dir.join("CodeGen").join("include");
         if self.enable_codegen {
             if target.ends_with("emscripten") {
                 panic!("codegen (jit) is not supported on emscripten");
@@ -185,22 +186,32 @@ impl Build {
 
         // Build `Common` library
         let common_lib_name = "luaucommon";
-        let common_source_dir = source_base_dir.join("luau").join("Common").join("src");
-        let common_include_dir = (source_base_dir.join("luau").join("Common")).join("include");
+        let common_source_dir = luau_source_dir.join("Common").join("src");
         config
             .clone()
-            .include(&common_include_dir)
             .add_files_by_ext_sorted(&common_source_dir, "cpp")
             .out_dir(&build_dir)
             .compile(common_lib_name);
 
+        // Build `Bytecode` library
+        let bytecode_lib_name = "luaubytecode";
+        let bytecode_source_dir = luau_source_dir.join("Bytecode").join("src");
+        let bytecode_include_dir = luau_source_dir.join("Bytecode").join("include");
+        config
+            .clone()
+            .include(&bytecode_include_dir)
+            .add_files_by_ext_sorted(&bytecode_source_dir, "cpp")
+            .out_dir(&build_dir)
+            .compile(bytecode_lib_name);
+
         // Build `Compiler` library
         let compiler_lib_name = "luaucompiler";
-        let compiler_source_dir = source_base_dir.join("luau").join("Compiler").join("src");
-        let compiler_include_dir = (source_base_dir.join("luau").join("Compiler")).join("include");
+        let compiler_source_dir = luau_source_dir.join("Compiler").join("src");
+        let compiler_include_dir = luau_source_dir.join("Compiler").join("include");
         config
             .clone()
             .include(&compiler_include_dir)
+            .include(&bytecode_include_dir)
             .include(&ast_include_dir)
             .define("LUACODE_API", "extern \"C\"")
             .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
@@ -209,8 +220,8 @@ impl Build {
 
         // Build `Config` library
         let config_lib_name = "luauconfig";
-        let config_source_dir = source_base_dir.join("luau").join("Config").join("src");
-        let config_include_dir = source_base_dir.join("luau").join("Config").join("include");
+        let config_source_dir = luau_source_dir.join("Config").join("src");
+        let config_include_dir = luau_source_dir.join("Config").join("include");
         config
             .clone()
             .include(&config_include_dir)
@@ -223,7 +234,7 @@ impl Build {
 
         // Build customization library
         let custom_lib_name = "luaucustom";
-        let custom_source_dir = source_base_dir.join("luau").join("Custom").join("src");
+        let custom_source_dir = luau_source_dir.join("Custom").join("src");
         config
             .clone()
             .include(&vm_include_dir)
@@ -234,8 +245,8 @@ impl Build {
 
         // Build `Require` library
         let require_lib_name = "luaurequire";
-        let require_source_dir = source_base_dir.join("luau").join("Require").join("src");
-        let require_include_dir = source_base_dir.join("luau").join("Require").join("include");
+        let require_source_dir = luau_source_dir.join("Require").join("src");
+        let require_include_dir = luau_source_dir.join("Require").join("include");
         config
             .clone()
             .include(&require_include_dir)
@@ -259,6 +270,7 @@ impl Build {
             lib_dir: build_dir,
             libs: vec![
                 vm_lib_name.to_string(),
+                bytecode_lib_name.to_string(),
                 compiler_lib_name.to_string(),
                 ast_lib_name.to_string(),
                 common_lib_name.to_string(),

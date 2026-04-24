@@ -3,8 +3,6 @@
 
 #include "Luau/IrUtils.h"
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenFastcallInvokeRange)
-
 namespace Luau
 {
 namespace CodeGen
@@ -56,6 +54,7 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::STORE_POINTER:
     case IrCmd::STORE_DOUBLE:
     case IrCmd::STORE_INT:
+    case IrCmd::STORE_INT64:
     case IrCmd::STORE_VECTOR:
     case IrCmd::STORE_TVALUE:
     case IrCmd::STORE_SPLIT_TVALUE:
@@ -68,17 +67,8 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
         invalidateRestoreVmRegs(vmRegOp(OP_B(inst)), function.intOp(OP_D(inst)));
         break;
     case IrCmd::INVOKE_FASTCALL:
-        if (FFlag::LuauCodegenFastcallInvokeRange)
-        {
-            // While ADJUST_STACK_TO_REG would semantically define the result range, we need to define it immediately
-            invalidateRestoreVmRegs(vmRegOp(OP_B(inst)), function.intOp(OP_G(inst)));
-        }
-        else
-        {
-            // Multiple return sequences (count == -1) are defined by ADJUST_STACK_TO_REG
-            if (int count = function.intOp(OP_G(inst)); count != -1)
-                invalidateRestoreVmRegs(vmRegOp(OP_B(inst)), count);
-        }
+        // While ADJUST_STACK_TO_REG would semantically define the result range, we need to define it immediately
+        invalidateRestoreVmRegs(vmRegOp(OP_B(inst)), function.intOp(OP_G(inst)));
         break;
     case IrCmd::DO_ARITH:
     case IrCmd::DO_LEN:
@@ -121,6 +111,7 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::LOAD_TAG:
     case IrCmd::LOAD_POINTER:
     case IrCmd::LOAD_DOUBLE:
+    case IrCmd::LOAD_INT64:
     case IrCmd::LOAD_INT:
     case IrCmd::LOAD_FLOAT:
     case IrCmd::LOAD_TVALUE:
@@ -129,6 +120,7 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::JUMP_IF_TRUTHY:
     case IrCmd::JUMP_IF_FALSY:
     case IrCmd::JUMP_EQ_TAG:
+    case IrCmd::SELECT_INT64:
     case IrCmd::SET_TABLE:
     case IrCmd::SET_UPVALUE:
     case IrCmd::INTERRUPT:
@@ -183,6 +175,7 @@ void IrValueLocationTracking::afterInstLowering(IrInst& inst, uint32_t instIdx)
     case IrCmd::LOAD_POINTER:
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
+    case IrCmd::LOAD_INT64:
     case IrCmd::LOAD_TVALUE:
         if (OP_A(inst).kind == IrOpKind::VmReg)
             invalidateRestoreOp(OP_A(inst), /*skipValueInvalidation*/ false);
@@ -192,6 +185,7 @@ void IrValueLocationTracking::afterInstLowering(IrInst& inst, uint32_t instIdx)
     case IrCmd::STORE_POINTER:
     case IrCmd::STORE_DOUBLE:
     case IrCmd::STORE_INT:
+    case IrCmd::STORE_INT64:
     case IrCmd::STORE_TVALUE:
         // If this is not the last use of the stored value, we can restore it from this new location
         // Additionally, even if it's a last use, it might allow its argument to be restored
@@ -270,6 +264,7 @@ void IrValueLocationTracking::invalidateRestoreOp(IrOp location, bool skipValueI
                 case IrValueKind::Double:
                 case IrValueKind::Pointer:
                 case IrValueKind::Int:
+                case IrValueKind::Int64:
                     return;
                 default:
                     break;

@@ -16,7 +16,7 @@
 
 #include <string.h>
 
-LUAU_FASTFLAG(LuauIntegerType)
+LUAU_FASTFLAGVARIABLE(LuauDirectFieldGet)
 
 // Disable c99-designator to avoid the warning in computed goto dispatch table
 #ifdef __clang__
@@ -196,7 +196,7 @@ inline bool luau_skipstep(uint8_t op)
     return op == LOP_PREPVARARGS || op == LOP_BREAK;
 }
 
-static LUAU_FORCEINLINE void luau_setupcci(lua_State* L, int nresults, StkId fun)
+static LUAU_NOINLINE void luau_setupcci(lua_State* L, int nresults, StkId fun)
 {
     CallInfo* ci = incr_ci(L);
 
@@ -511,6 +511,36 @@ reentry:
                 }
                 else
                 {
+                    // fast-path: registered direct field handler
+                    if (FFlag::LuauDirectFieldGet && ttisuserdata(rb))
+                    {
+                        LuaTable* dispatch = L->global->udatadirectfields[uvalue(rb)->tag];
+                        if (dispatch)
+                        {
+                            int slot = LUAU_INSN_C(insn) & dispatch->nodemask8;
+                            LuaNode* n = &dispatch->node[slot];
+
+                            if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n))))
+                            {
+                                lua_UserdataDirectFieldGet fn = reinterpret_cast<lua_UserdataDirectFieldGet>(pvalue(gval(n)));
+                                fn(uvalue(rb)->data, ra);
+                                VM_NEXT();
+                            }
+
+                            const TValue* fptr = luaH_getstr(dispatch, tsvalue(kv));
+                            if (!ttisnil(fptr))
+                            {
+                                // cache slot for future lookups
+                                VM_PATCH_C(pc - 2, gval2slot(dispatch, fptr));
+                                lua_UserdataDirectFieldGet fn = reinterpret_cast<lua_UserdataDirectFieldGet>(pvalue(fptr));
+                                fn(uvalue(rb)->data, ra);
+                                VM_NEXT();
+                            }
+                        }
+
+                        // fall through to slow path
+                    }
+
                     // fast-path: user data with C __index TM
                     const TValue* fn = 0;
                     if (ttisuserdata(rb) && (fn = fasttm(L, uvalue(rb)->metatable, TM_INDEX)) && ttisfunction(fn) && clvalue(fn)->isC)
@@ -1203,13 +1233,9 @@ reentry:
                         break;
 
                     case LUA_TINTEGER:
-                        if (FFlag::LuauIntegerType)
-                        {
-                            pc += lvalue(ra) == lvalue(rb) ? LUAU_INSN_D(insn) : 1;
-                            LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
-                            VM_NEXT();
-                        }
-                        [[fallthrough]];
+                        pc += lvalue(ra) == lvalue(rb) ? LUAU_INSN_D(insn) : 1;
+                        LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
+                        VM_NEXT();
 
                     default:
                         LUAU_ASSERT(!"Unknown value type");
@@ -1327,13 +1353,9 @@ reentry:
                         break;
 
                     case LUA_TINTEGER:
-                        if (FFlag::LuauIntegerType)
-                        {
-                            pc += lvalue(ra) != lvalue(rb) ? LUAU_INSN_D(insn) : 1;
-                            LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
-                            VM_NEXT();
-                        }
-                        [[fallthrough]];
+                        pc += lvalue(ra) != lvalue(rb) ? LUAU_INSN_D(insn) : 1;
+                        LUAU_ASSERT(unsigned(pc - cl->l.p->code) < unsigned(cl->l.p->sizecode));
+                        VM_NEXT();
 
                     default:
                         LUAU_ASSERT(!"Unknown value type");
