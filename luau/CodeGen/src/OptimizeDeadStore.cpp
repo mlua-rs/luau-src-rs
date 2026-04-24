@@ -14,6 +14,7 @@ LUAU_FASTFLAG(LuauCodegenBufferRangeMerge4)
 LUAU_FASTFLAGVARIABLE(LuauCodegenMarkDeadRegisters2)
 LUAU_FASTFLAGVARIABLE(LuauCodegenDseOnCondJump)
 LUAU_FASTFLAG(LuauCodegenPropagateTagsAcrossChains2)
+LUAU_FASTFLAGVARIABLE(LuauCodegenDseNilClearsValue)
 
 // TODO: optimization can be improved by knowing which registers are live in at each VM exit
 
@@ -719,7 +720,12 @@ static void markDeadStoresInInst(RemoveDeadStoreState& state, IrBuilder& build, 
             regInfo.tagInstIdx = index;
 
             if (state.tagValuePairEstablished(regInfo))
+            {
+                if (FFlag::LuauCodegenDseNilClearsValue && tag == LUA_TNIL)
+                    regInfo.valueInstIdx = kInvalidInstIdx;
+
                 regInfo.tvalueInstIdx = kInvalidInstIdx;
+            }
 
             regInfo.maybeGco = isGCO(tag);
             regInfo.knownTag = tag;
@@ -780,6 +786,7 @@ static void markDeadStoresInInst(RemoveDeadStoreState& state, IrBuilder& build, 
         }
         break;
     case IrCmd::STORE_DOUBLE:
+    case IrCmd::STORE_INT64:
     case IrCmd::STORE_INT:
         if (OP_A(inst).kind == IrOpKind::VmReg)
         {
@@ -933,6 +940,9 @@ static void markDeadStoresInInst(RemoveDeadStoreState& state, IrBuilder& build, 
     case IrCmd::CHECK_ARRAY_SIZE:
         state.checkLiveIns(OP_C(inst));
         break;
+    case IrCmd::CHECK_DIV_INT64:
+        state.checkLiveIns(OP_C(inst));
+        break;
     case IrCmd::CHECK_SLOT_MATCH:
         state.checkLiveIns(OP_C(inst));
         break;
@@ -951,7 +961,9 @@ static void markDeadStoresInInst(RemoveDeadStoreState& state, IrBuilder& build, 
     case IrCmd::CHECK_USERDATA_TAG:
         state.checkLiveIns(OP_C(inst));
         break;
+    case IrCmd::CHECK_CMP_NUM:
     case IrCmd::CHECK_CMP_INT:
+    case IrCmd::CHECK_CMP_INT64:
         state.checkLiveIns(OP_D(inst));
         break;
 
