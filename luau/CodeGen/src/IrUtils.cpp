@@ -20,6 +20,7 @@
 
 LUAU_FASTFLAG(LuauCodegenPropagateTagsAcrossChains2)
 LUAU_FASTFLAGVARIABLE(LuauCodegenConsistentHasResult)
+LUAU_FASTFLAG(LuauCodegenVmExitSync)
 
 namespace Luau
 {
@@ -58,6 +59,9 @@ int getOpLength(LuauOpcode op)
     case LOP_GETUDATAKS:
     case LOP_SETUDATAKS:
     case LOP_NAMECALLUDATA:
+    case LOP_NEWCLASSMEMBER:
+    case LOP_CALLFB:
+    case LOP_CMPPROTO:
         return 2;
 
     default:
@@ -89,6 +93,7 @@ bool isJumpD(LuauOpcode op)
     case LOP_JUMPXEQKB:
     case LOP_JUMPXEQKN:
     case LOP_JUMPXEQKS:
+    case LOP_CMPPROTO:
         return true;
 
     default:
@@ -409,6 +414,8 @@ IrValueKind getCmdValueKind(IrCmd cmd)
         return IrValueKind::Float;
     case IrCmd::BUFFER_READF64:
         return IrValueKind::Double;
+    case IrCmd::JUMP_CMP_PROTOID:
+        return IrValueKind::None;
     }
 
     LUAU_UNREACHABLE();
@@ -1757,6 +1764,17 @@ void killUnusedBlocks(IrFunction& function)
     }
 }
 
+static int getBlockKindPriority(IrBlockKind kind)
+{
+    if (kind == IrBlockKind::Fallback)
+        return 1;
+
+    if (kind == IrBlockKind::ExitSync)
+        return 2;
+
+    return 0;
+}
+
 std::vector<uint32_t> getSortedBlockOrder(IrFunction& function)
 {
     std::vector<uint32_t> sortedBlocks;
@@ -1772,9 +1790,18 @@ std::vector<uint32_t> getSortedBlockOrder(IrFunction& function)
             const IrBlock& a = function.blocks[idxA];
             const IrBlock& b = function.blocks[idxB];
 
-            // Place fallback blocks at the end
-            if ((a.kind == IrBlockKind::Fallback) != (b.kind == IrBlockKind::Fallback))
-                return (a.kind == IrBlockKind::Fallback) < (b.kind == IrBlockKind::Fallback);
+            if (FFlag::LuauCodegenVmExitSync)
+            {
+                // Place fallback blocks at the end followed by exit sync blocks
+                if (getBlockKindPriority(a.kind) != getBlockKindPriority(b.kind))
+                    return getBlockKindPriority(a.kind) < getBlockKindPriority(b.kind);
+            }
+            else
+            {
+                // Place fallback blocks at the end
+                if ((a.kind == IrBlockKind::Fallback) != (b.kind == IrBlockKind::Fallback))
+                    return (a.kind == IrBlockKind::Fallback) < (b.kind == IrBlockKind::Fallback);
+            }
 
             // Try to order by instruction order
             if (a.sortkey != b.sortkey)

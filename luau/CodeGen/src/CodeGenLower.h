@@ -101,7 +101,7 @@ inline bool lowerImpl(
 
     bool outputEnabled = options.includeAssembly || options.includeIr;
 
-    IrToStringContext ctx{build.text, function.blocks, function.constants, function.cfg, function.proto};
+    IrToStringContext ctx{build.text, function.blocks, function.constants, function.cfg, function.vmExitInfo, function.proto};
 
     // We use this to skip outlined fallback blocks from IR/asm text output
     size_t textSize = build.text.length();
@@ -125,10 +125,10 @@ inline bool lowerImpl(
 
         CODEGEN_ASSERT(block.start != ~0u);
         CODEGEN_ASSERT(block.finish != ~0u);
-        CODEGEN_ASSERT(!seenFallback || block.kind == IrBlockKind::Fallback);
+        CODEGEN_ASSERT(!seenFallback || block.kind == IrBlockKind::Fallback || block.kind == IrBlockKind::ExitSync);
 
-        // If we want to skip fallback code IR/asm, we'll record when those blocks start once we see them
-        if (block.kind == IrBlockKind::Fallback && !seenFallback)
+        // If we want to skip fallback/exit code IR/asm, we'll record when those blocks start once we see them
+        if ((block.kind == IrBlockKind::Fallback || block.kind == IrBlockKind::ExitSync) && !seenFallback)
         {
             textSize = build.text.length();
             codeSize = build.getCodeSize();
@@ -174,7 +174,7 @@ inline bool lowerImpl(
             }
 
             CODEGEN_ASSERT(block.startpc != kBlockNoStartPc);
-            lowering.checkSafeEnv(IrOp{IrOpKind::VmExit, block.startpc}, nextBlock);
+            lowering.checkSafeEnv(IrOp{IrOpKind::VmExit, block.startpc}, kInvalidInstIdx, nextBlock);
         }
 
         for (uint32_t index = block.start; index <= block.finish; index++)
@@ -254,10 +254,13 @@ inline bool lowerImpl(
             // gadget offsets unpredictable. 0–7 bytes; A64 rounds down to a multiple of 4.
             IrInst& termInst = function.instructions[block.finish];
 
-            bool blockFallsThrough = anyArgumentMatch(termInst, [&](IrOp op)
-            {
-                return op.kind == IrOpKind::Block && function.blockOp(op).start == nextBlock.start;
-            });
+            bool blockFallsThrough = anyArgumentMatch(
+                termInst,
+                [&](IrOp op)
+                {
+                    return op.kind == IrOpKind::Block && function.blockOp(op).start == nextBlock.start;
+                }
+            );
 
             // Single-predecessor fallthrough should skip padding altogether
             if (!(blockFallsThrough && termInst.cmd == IrCmd::JUMP && nextBlock.useCount == 1))

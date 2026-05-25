@@ -9,6 +9,12 @@
 #include <limits>
 #include <math.h>
 
+LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
+
+LUAU_FASTFLAGVARIABLE(LuauErrorTolerantPrettyPrinting)
+LUAU_FASTFLAG(LuauCstExprGroup)
+LUAU_FASTFLAG(LuauCstTypeGroup)
+
 namespace
 {
 bool isIdentifierStartChar(char c)
@@ -312,6 +318,19 @@ struct Printer
         return nullptr;
     }
 
+    // If pos has a value, advances to it and writes s. Otherwise does nothing.
+    void maybeAdvanceAndWrite(const Position& pos, std::string_view s, bool alwaysWrite = false)
+    {
+        LUAU_ASSERT(FFlag::LuauCstExprGroup || FFlag::LuauCstTypeGroup);
+        if (pos.hasValue())
+        {
+            advance(pos);
+            writer.write(s);
+        }
+        else if (alwaysWrite)
+            writer.write(s);
+    }
+
     void visualize(const AstLocal& local, Position colonPosition)
     {
         advance(local.location.begin);
@@ -464,9 +483,24 @@ struct Printer
         if (const auto& a = expr.as<AstExprGroup>())
         {
             writer.symbol("(");
+
             visualize(*a->expr);
-            advanceBefore(a->location.end, 1);
-            writer.symbol(")");
+
+            if (FFlag::LuauCstExprGroup)
+            {
+                if (const auto cstNode = lookupCstNode<CstExprGroup>(a))
+                    maybeAdvanceAndWrite(cstNode->closePosition, ")");
+                else
+                {
+                    advanceBefore(a->location.end, 1);
+                    writer.symbol(")");
+                }
+            }
+            else
+            {
+                advanceBefore(a->location.end, 1);
+                writer.symbol(")");
+            }
         }
         else if (expr.is<AstExprConstantNil>())
         {
@@ -1305,6 +1339,52 @@ struct Printer
             writer.symbol(":");
             visualizeTypeAnnotation(*a->type);
         }
+        else if (const auto& c = program.as<AstStatClass>(); c && FFlag::DebugLuauUserDefinedClasses)
+        {
+            writer.keyword("class");
+            writer.advance(c->name->location.begin);
+            writer.identifier(c->name->name.value);
+
+            for (const auto& member : c->members)
+            {
+                visit(
+                    overloaded{
+                        [&](const AstClassProperty& prop)
+                        {
+                            writer.advance(prop.qualifierLocation.begin);
+                            writer.keyword("public");
+                            writer.advance(prop.nameLocation.begin);
+                            writer.identifier(prop.name.value);
+                            if (writeTypes && prop.ty)
+                            {
+                                LUAU_ASSERT(prop.typeColonLocation.has_value());
+                                writer.advance(prop.typeColonLocation->begin);
+                                writer.symbol(":");
+                                visualizeTypeAnnotation(*prop.ty);
+                            }
+                        },
+                        [&](const AstClassMethod& method)
+                        {
+                            if (method.qualifierLocation)
+                            {
+                                writer.advance(method.qualifierLocation->begin);
+                                writer.keyword("public");
+                            }
+                            writer.advance(method.keywordLocation.begin);
+                            writer.keyword("function");
+                            writer.advance(method.nameLocation.begin);
+                            writer.identifier(method.functionName.value);
+                            visualizeFunctionBody(*method.function);
+                        }
+                    },
+                    member
+                );
+            }
+
+            writer.newline();
+            writer.keyword("end");
+            writer.newline();
+        }
         else
         {
             LUAU_ASSERT(!"Unknown AstStat");
@@ -1843,9 +1923,24 @@ struct Printer
         else if (const auto& a = typeAnnotation.as<AstTypeGroup>())
         {
             writer.symbol("(");
+
             visualizeTypeAnnotation(*a->type);
-            advanceBefore(a->location.end, 1);
-            writer.symbol(")");
+
+            if (FFlag::LuauCstTypeGroup)
+            {
+                if (const CstTypeGroup* cstNode = lookupCstNode<CstTypeGroup>(a))
+                    maybeAdvanceAndWrite(cstNode->closePosition, ")");
+                else
+                {
+                    advanceBefore(a->location.end, 1);
+                    writer.symbol(")");
+                }
+            }
+            else
+            {
+                advanceBefore(a->location.end, 1);
+                writer.symbol(")");
+            }
         }
         else if (const auto& a = typeAnnotation.as<AstTypeSingletonBool>())
         {
@@ -1960,7 +2055,7 @@ std::string prettyPrintWithTypes(AstStatBlock& block)
     return prettyPrintWithTypes(block, CstNodeMap{nullptr});
 }
 
-PrettyPrintResult prettyPrint(std::string_view source, ParseOptions options, bool withTypes)
+PrettyPrintResult prettyPrint(std::string_view source, ParseOptions options, bool withTypes, bool ignoreParseErrors)
 {
     options.storeCstData = true;
 
@@ -1968,7 +2063,7 @@ PrettyPrintResult prettyPrint(std::string_view source, ParseOptions options, boo
     auto names = AstNameTable{allocator};
     ParseResult parseResult = Parser::parse(source.data(), source.size(), names, allocator, std::move(options));
 
-    if (!parseResult.errors.empty())
+    if (FFlag::LuauErrorTolerantPrettyPrinting ? !parseResult.errors.empty() && !ignoreParseErrors : !parseResult.errors.empty())
     {
         // PrettyPrintResult keeps track of only a single error
         const ParseError& error = parseResult.errors.front();
