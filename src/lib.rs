@@ -204,6 +204,22 @@ impl Build {
             .out_dir(&build_dir)
             .compile(bytecode_lib_name);
 
+        // Build `Inliner` library
+        let inliner_lib_name = "luauinliner";
+        let inliner_source_dir = luau_source_dir.join("Inliner").join("src");
+        let inliner_include_dir = luau_source_dir.join("Inliner").join("include");
+        config
+            .clone()
+            .include(&inliner_include_dir)
+            .include(&bytecode_include_dir)
+            .include(&bytecode_source_dir)
+            .include(&vm_include_dir)
+            .include(&vm_source_dir)
+            .define("LUAJITINLINER_API", "extern \"C\"")
+            .add_files_by_ext_sorted(&inliner_source_dir, "cpp")
+            .out_dir(&build_dir)
+            .compile(inliner_lib_name);
+
         // Build `Compiler` library
         let compiler_lib_name = "luaucompiler";
         let compiler_source_dir = luau_source_dir.join("Compiler").join("src");
@@ -269,6 +285,7 @@ impl Build {
         let mut artifacts = Artifacts {
             lib_dir: build_dir,
             libs: vec![
+                inliner_lib_name.to_string(),
                 vm_lib_name.to_string(),
                 bytecode_lib_name.to_string(),
                 compiler_lib_name.to_string(),
