@@ -47,6 +47,6 @@ runs:
         echo "CC_wasm32_unknown_emscripten=$EMSDK/upstream/emscripten/emcc" >> $GITHUB_ENV
         echo "CXX_wasm32_unknown_emscripten=$EMSDK/upstream/emscripten/em++" >> $GITHUB_ENV
         echo "AR_wasm32_unknown_emscripten=$EMSDK/upstream/emscripten/emar" >> $GITHUB_ENV
-        echo "CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER=$EMSDK/upstream/emscripten/emcc" >> $GITHUB_ENV
+        echo "CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER=$EMSDK/upstream/emscripten/em++" >> $GITHUB_ENV
         echo "CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUNNER=$EMSDK_NODE" >> $GITHUB_ENV
       shell: bash
