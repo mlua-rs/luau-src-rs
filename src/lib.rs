@@ -127,6 +127,26 @@ impl Build {
             .std("c++17")
             .cpp(true);
 
+        // Extra compiler flags and include directories for the vendored C++.
+        //
+        // `LUAU_CXXFLAGS` is split on whitespace and appended to the compiler
+        // command; `LUAU_INCLUDE_DIRS` uses the platform path separator. Both
+        // are declared with `rerun-if-env-changed`, so changing either forces a
+        // rebuild instead of silently reusing an artifact built with the old
+        // settings.
+        println!("cargo:rerun-if-env-changed=LUAU_CXXFLAGS");
+        println!("cargo:rerun-if-env-changed=LUAU_INCLUDE_DIRS");
+        if let Ok(flags) = env::var("LUAU_CXXFLAGS") {
+            for flag in flags.split_whitespace() {
+                config.flag(flag);
+            }
+        }
+        if let Ok(dirs) = env::var("LUAU_INCLUDE_DIRS") {
+            for dir in env::split_paths(&dirs) {
+                config.include(dir);
+            }
+        }
+
         if target.ends_with("emscripten") {
             // cc-rs unconditionally adds `-fno-exceptions` for wasm32.
             // We need to re-enable exceptions and switch to the
