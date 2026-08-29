@@ -4,6 +4,7 @@
 #include "Luau/BytecodeGraph.h"
 #include "Luau/BytecodeUtils.h"
 #include "Luau/Common.h"
+#include "Luau/InsertionOrderedMap.h"
 
 #include <algorithm>
 #include <optional>
@@ -35,7 +36,7 @@ struct BytecodeGraphParser
         // this enables loop phis to be created without a separate pass (Braun "Simple and Efficient Construction of Static Single Assignment Form")
         bool sealed = false;
         uint32_t unsealedPreds = 0;
-        std::unordered_map<Reg, BcOp> incompletePhis;
+        InsertionOrderedMap<Reg, BcOp> incompletePhis;
     };
 
     using Producers = std::vector<BlockProducers>;
@@ -283,9 +284,11 @@ struct BytecodeGraphParser
             return;
         // mark sealed first so reads triggered while filling use the normal (non-incomplete) path
         bp.sealed = true;
-        std::vector<std::pair<Reg, BcOp>> pending(bp.incompletePhis.begin(), bp.incompletePhis.end());
+
+        InsertionOrderedMap<Reg, BcOp> pending = std::move(bp.incompletePhis);
         bp.incompletePhis.clear();
-        for (auto& [reg, phiOp] : pending)
+
+        for (const auto& [reg, phiOp] : pending)
         {
             BcOp val = addPhiOperands(reg, phiOp, block);
             BlockProducers& cur = producers.at(block.index);
@@ -660,7 +663,13 @@ struct BytecodeGraphParser
             case LOP_GETTABLEKS:
                 addVmRegInput(node, LUAU_INSN_B(insn));
                 addImmInput(node, static_cast<int32_t>(LUAU_INSN_C(insn)));
-                addVmConstInput(node, aux);
+                if (op == LOP_GETUDATAKS)
+                {
+                    addVmConstInput(node, LUAU_INSN_AUX_KV16(aux));
+                    addImmInput(node, static_cast<int32_t>(LUAU_INSN_AUX_SLOT(aux)));
+                }
+                else
+                    addVmConstInput(node, aux);
                 addProducer(LUAU_INSN_A(insn), nodeOp);
                 break;
 
@@ -669,7 +678,13 @@ struct BytecodeGraphParser
                 addVmRegInput(node, LUAU_INSN_A(insn));
                 addVmRegInput(node, LUAU_INSN_B(insn));
                 addImmInput(node, static_cast<int32_t>(LUAU_INSN_C(insn)));
-                addVmConstInput(node, aux);
+                if (op == LOP_SETUDATAKS)
+                {
+                    addVmConstInput(node, LUAU_INSN_AUX_KV16(aux));
+                    addImmInput(node, static_cast<int32_t>(LUAU_INSN_AUX_SLOT(aux)));
+                }
+                else
+                    addVmConstInput(node, aux);
                 break;
 
             case LOP_GETTABLEN:
@@ -693,7 +708,13 @@ struct BytecodeGraphParser
             case LOP_NAMECALL:
                 addVmRegInput(node, LUAU_INSN_B(insn));
                 addImmInput(node, static_cast<int32_t>(LUAU_INSN_C(insn)));
-                addVmConstInput(node, aux);
+                if (op == LOP_NAMECALLUDATA)
+                {
+                    addVmConstInput(node, LUAU_INSN_AUX_KV16(aux));
+                    addImmInput(node, static_cast<int32_t>(LUAU_INSN_AUX_SLOT(aux)));
+                }
+                else
+                    addVmConstInput(node, aux);
                 func.regs[nodeOp] = LUAU_INSN_A(insn);
                 addProducer(LUAU_INSN_A(insn), func.addProj(nodeOp, 0));
                 addProducer(LUAU_INSN_A(insn) + 1, func.addProj(nodeOp, 1));
@@ -1003,7 +1024,22 @@ struct BytecodeGraphParser
             case LOP_NEWCLASSMEMBER:
                 LUAU_ASSERT(FFlag::DebugLuauUserDefinedClasses);
                 addVmRegInput(node, LUAU_INSN_A(insn));
+                addVmRegInput(node, LUAU_INSN_C(insn));
                 addVmConstInput(node, aux);
+                break;
+
+            case LOP_FASTPCALL:
+                addImmInput(node, static_cast<int32_t>(LUAU_INSN_A(insn)));
+                addImmInput(node, static_cast<int32_t>(LUAU_INSN_B(insn)));
+                // turn it in BcOp to CALL BcInst&.
+                addImmInput(node, static_cast<int32_t>(LUAU_INSN_C(insn)));
+                break;
+            case LOP_NEWCLASS:
+                LUAU_ASSERT(FFlag::DebugLuauUserDefinedClasses);
+                addVmRegInput(node, LUAU_INSN_B(insn));
+                addImmInput(node, static_cast<uint32_t>(LUAU_INSN_C(insn)));
+                addVmConstInput(node, aux);
+                addProducer(LUAU_INSN_A(insn), nodeOp);
                 break;
 
 

@@ -26,7 +26,7 @@ typedef struct stringtable
 // clang-format on
 
 /*
-** informations about a call
+** information about a call
 **
 ** the general Lua stack frame structure is as follows:
 ** - each function gets a stack frame, with function "registers" being stack slots on the frame
@@ -75,7 +75,8 @@ typedef struct CallInfo
 #define LUA_CALLINFO_RETURN (1 << 0) // should the interpreter return after returning from this callinfo? first frame must have this set
 #define LUA_CALLINFO_HANDLE (1 << 1) // should the error thrown during execution get handled by continuation from this callinfo? func must be C
 #define LUA_CALLINFO_NATIVE (1 << 2) // should this function be executed using execution callback for native code
-#define LUA_CALLINFO_OPYIELD (1 << 3) // call frame has yielded on a non-call opcode and requires luaV_finishop
+#define LUA_CALLINFO_OPYIELD (1 << 3) // call frame has yielded on a non-call opcode and requires luau_finishop
+#define LUA_CALLINFO_PCALL (1 << 4) // call frame was setup by a synthetic protected call and requires luau_pospcallsuccess
 
 #define curr_func(L) (clvalue(L->ci->func))
 #define ci_func(ci) (clvalue((ci)->func))
@@ -123,6 +124,7 @@ struct GCCycleMetrics
     double atomictimeupval = 0.0;
     double atomictimeweak = 0.0;
     double atomictimegray = 0.0;
+    double atomictimeembedder = 0.0;
     double atomictimeclear = 0.0;
 
     double sweeptime = 0.0;
@@ -226,7 +228,7 @@ typedef struct global_State
     struct lua_jmpbuf* errorjmp; // jump buffer data for longjmp-style error handling
 
     uint64_t rngstate; // PCG random number generator state
-    uint64_t ptrenckey[4]; // pointer encoding key for display
+    uint64_t ptrenckey[4]; // pointer encoding key for display (remove when unreferenced)
 
     lua_Callbacks cb;
 
@@ -240,12 +242,24 @@ typedef struct global_State
     size_t memcatbytes[LUA_MEMORY_CATEGORIES]; // total amount of memory used by each memory category
 
     void (*udatagc[LUA_UTAG_LIMIT])(lua_State*, void*); // for each userdata tag, a gc callback to be called immediately before freeing memory
+    lua_UserdataMark udatamark[LUA_UTAG_LIMIT]; // gc callbacks allowing the embedder to mark underlying native objects for the given userdata
     LuaTable* udatamt[LUA_UTAG_LIMIT]; // metatables for tagged userdata
+
+    TValue weakregistry; // backing table for lua_weakref/lua_weakunref/lua_getweakref
+    int weakregistryfree; // next free slot in weakregistry
+    lua_EmbedderGc embeddergc; // embedder GC callback for keeping weak references alive
 
     TString* lightuserdataname[LUA_LUTAG_LIMIT]; // names for tagged lightuserdata
 
     // per-tag direct field dispatch tables; NULL until first field is registered for that tag
     struct LuaTable* udatadirectfields[UTAG_INTERNAL_LIMIT];
+
+    // cached closures for fast protected calls
+    struct Closure* builtinPcall;
+    struct Closure* builtinXpcall;
+
+    uint64_t ptrenckeynew[8]; // pointer encoding key for display
+    bool ptrencactive;
 
     GCStats gcstats;
     uint32_t lastprotoid;
@@ -314,6 +328,7 @@ union GCObject
     struct LuauBuffer buf;
     struct LuauClass lclass;
     struct LuauObject lobject;
+    struct LuauVector vec;
 };
 
 // macros to convert a GCObject into a specific value
@@ -327,6 +342,7 @@ union GCObject
 #define gco2buf(o) check_exp((o)->gch.tt == LUA_TBUFFER, &((o)->buf))
 #define gco2class(o) check_exp((o)->gch.tt == LUA_TCLASS, &((o)->lclass))
 #define gco2object(o) check_exp((o)->gch.tt == LUA_TOBJECT, &((o)->lobject))
+#define gco2vec(o) check_exp((o)->gch.tt == LUA_TVECTOR, &((o)->vec))
 
 // macro to convert any Lua object into a GCObject
 #define obj2gco(v) check_exp(iscollectable(v), cast_to(GCObject*, (v) + 0))

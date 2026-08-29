@@ -2,7 +2,7 @@
 #pragma once
 
 #include "Luau/AssemblyBuilderX64.h"
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrData.h"
 #include "Luau/IrRegAllocX64.h"
 
@@ -27,7 +27,7 @@ namespace X64
 
 struct IrLoweringX64
 {
-    IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats);
+    IrLoweringX64(LogBuilder* logger, AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats);
 
     void lowerInst(IrInst& inst, uint32_t index, const IrBlock& next);
     void startBlock(const IrBlock& curr);
@@ -90,6 +90,7 @@ struct IrLoweringX64
         unsigned int pcpos;
     };
 
+    LogBuilder* logger = nullptr;
     AssemblyBuilderX64& build;
     ModuleHelpers& helpers;
 
@@ -102,7 +103,7 @@ struct IrLoweringX64
 
     std::vector<InterruptHandler> interruptHandlers;
     std::vector<ExitHandler> exitHandlers;
-    DenseHashMap<uint32_t, uint32_t> exitHandlerMap;
+    DenseHashMap2<uint32_t, uint32_t> exitHandlerMap;
 
     OperandX64 vectorAndMask = noreg;
     OperandX64 vectorOrMask = noreg;

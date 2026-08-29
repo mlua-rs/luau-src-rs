@@ -3,7 +3,7 @@
 
 #include "Luau/AssemblyBuilderA64.h"
 #include "Luau/CodeGenOptions.h"
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrData.h"
 
 #include "IrRegAllocA64.h"
@@ -26,7 +26,7 @@ namespace A64
 
 struct IrLoweringA64
 {
-    IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats);
+    IrLoweringA64(LogBuilder* logger, AssemblyBuilderA64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats);
 
     void lowerInst(IrInst& inst, uint32_t index, const IrBlock& next);
     void startBlock(const IrBlock& curr);
@@ -86,6 +86,7 @@ struct IrLoweringA64
         unsigned int pcpos;
     };
 
+    LogBuilder* logger = nullptr;
     AssemblyBuilderA64& build;
     ModuleHelpers& helpers;
 
@@ -98,7 +99,7 @@ struct IrLoweringA64
 
     std::vector<InterruptHandler> interruptHandlers;
     std::vector<ExitHandler> exitHandlers;
-    DenseHashMap<uint32_t, uint32_t> exitHandlerMap;
+    DenseHashMap2<uint32_t, uint32_t> exitHandlerMap;
 
     uint32_t exitSyncAllocToken = 0;
     uint32_t exitSyncInstIdx = kInvalidInstIdx;

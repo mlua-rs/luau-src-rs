@@ -11,7 +11,6 @@
 
 #include "lstate.h"
 
-
 /* An overview of native environment stack setup that we are making in the entry function:
  * Each line is 8 bytes, stack grows downwards.
  *
@@ -190,7 +189,7 @@ static EntryLocations buildEntryFunction(AssemblyBuilderX64& build, UnwindBuilde
 
 bool initHeaderFunctions(BaseCodeGenContext& codeGenContext)
 {
-    AssemblyBuilderX64 build(/* logText= */ false);
+    AssemblyBuilderX64 build(/* logger= */ nullptr, /* features= */ 0);
     UnwindBuilder& unwind = *codeGenContext.unwindBuilder.get();
 
     unwind.startInfo(UnwindBuilder::X64);
@@ -221,35 +220,35 @@ bool initHeaderFunctions(BaseCodeGenContext& codeGenContext)
     return true;
 }
 
-void assembleHelpers(X64::AssemblyBuilderX64& build, ModuleHelpers& helpers)
+void assembleHelpers(LogBuilder* logger, X64::AssemblyBuilderX64& build, ModuleHelpers& helpers)
 {
-    if (build.logText)
-        build.logAppend("; updatePcAndContinueInVm\n");
+    if (logger)
+        logger->append("; updatePcAndContinueInVm\n");
     build.setLabel(helpers.updatePcAndContinueInVm);
     emitUpdatePcForExit(build);
 
-    if (build.logText)
-        build.logAppend("; exitContinueVmClearNativeFlag\n");
+    if (logger)
+        logger->append("; exitContinueVmClearNativeFlag\n");
     build.setLabel(helpers.exitContinueVmClearNativeFlag);
     emitClearNativeFlag(build);
 
-    if (build.logText)
-        build.logAppend("; exitContinueVm\n");
+    if (logger)
+        logger->append("; exitContinueVm\n");
     build.setLabel(helpers.exitContinueVm);
     emitExit(build, /* continueInVm */ true);
 
-    if (build.logText)
-        build.logAppend("; exitNoContinueVm\n");
+    if (logger)
+        logger->append("; exitNoContinueVm\n");
     build.setLabel(helpers.exitNoContinueVm);
     emitExit(build, /* continueInVm */ false);
 
-    if (build.logText)
-        build.logAppend("; interrupt\n");
+    if (logger)
+        logger->append("; interrupt\n");
     build.setLabel(helpers.interrupt);
     emitInterrupt(build);
 
-    if (build.logText)
-        build.logAppend("; return\n");
+    if (logger)
+        logger->append("; return\n");
     build.setLabel(helpers.return_);
     emitReturn(build, helpers);
 }

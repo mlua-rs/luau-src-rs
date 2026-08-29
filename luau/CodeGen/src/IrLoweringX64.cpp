@@ -2,7 +2,7 @@
 #include "IrLoweringX64.h"
 
 #include "Luau/CodeGenOptions.h"
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrCallWrapperX64.h"
 #include "Luau/IrData.h"
 #include "Luau/IrUtils.h"
@@ -17,8 +17,6 @@
 #include "lgc.h"
 
 LUAU_FASTFLAG(LuauCodegenFixBufferLenCheck)
-LUAU_FASTFLAG(LuauCodegenVmExitSync)
-LUAU_FASTFLAG(LuauYieldIter2)
 LUAU_FASTFLAG(LuauCIProto)
 
 namespace Luau
@@ -28,14 +26,15 @@ namespace CodeGen
 namespace X64
 {
 
-IrLoweringX64::IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats)
-    : build(build)
+IrLoweringX64::IrLoweringX64(LogBuilder* logger, AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats)
+    : logger(logger)
+    , build(build)
     , helpers(helpers)
     , function(function)
     , stats(stats)
-    , regs(build, function, stats)
-    , valueTracker(function)
-    , exitHandlerMap(~0u)
+    , regs(logger, build, function, stats)
+    , valueTracker(logger, function)
+
 {
     valueTracker.setRestoreCallback(
         &regs,
@@ -1766,6 +1765,28 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         }
         break;
     }
+    case IrCmd::JUMP_CMP_INT64:
+    {
+        IrCondition cond = conditionOp(OP_C(inst));
+
+        ConditionX64 cc = getConditionInt(cond);
+
+        // Constant propagation can place a constant on either side and there is no form comparing an immediate
+        // against a register, so the operands are swapped and the condition inverted, like CMP_INT64 does
+        if (OP_A(inst).kind == IrOpKind::Constant)
+        {
+            build.cmp(regOp(OP_B(inst)), memRegInt64Op(OP_A(inst)));
+            cc = getInverseCondition(cc);
+        }
+        else
+        {
+            build.cmp(regOp(OP_A(inst)), memRegInt64Op(OP_B(inst)));
+        }
+
+        build.jcc(cc, labelOp(OP_D(inst)));
+        jumpOrFallthrough(blockOp(OP_E(inst)), next);
+        break;
+    }
     case IrCmd::JUMP_EQ_POINTER:
         build.cmp(regOp(OP_A(inst)), regOp(OP_B(inst)));
 
@@ -1920,6 +1941,17 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         callWrap.addArgument(SizeX64::qword, intOp(OP_A(inst)));
         callWrap.addArgument(SizeX64::dword, intOp(OP_B(inst)));
         callWrap.call(qword[rNativeContext + offsetof(NativeContext, newUserdata)]);
+        inst.regX64 = regs.takeReg(rax, index);
+        break;
+    }
+    case IrCmd::NEW_VECTOR:
+    {
+        IrCallWrapperX64 callWrap(regs, build, index);
+        callWrap.addArgument(SizeX64::qword, rState);
+        callWrap.addArgument(SizeX64::xmmword, memRegDoubleOp(OP_A(inst)), OP_A(inst));
+        callWrap.addArgument(SizeX64::xmmword, memRegDoubleOp(OP_B(inst)), OP_B(inst));
+        callWrap.addArgument(SizeX64::xmmword, memRegDoubleOp(OP_C(inst)), OP_C(inst));
+        callWrap.call(qword[rNativeContext + offsetof(NativeContext, newVector)]);
         inst.regX64 = regs.takeReg(rax, index);
         break;
     }
@@ -2132,6 +2164,33 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         build.jcc(ConditionX64::Less, labelOp(OP_B(inst))); // jl jumps if SF != OF
         break;
     }
+    case IrCmd::INVOKE_FASTPCALL:
+    {
+        regs.assertAllFree();
+        regs.assertNoSpills();
+
+        IrCallWrapperX64 callWrap(regs, build, index);
+        callWrap.addArgument(SizeX64::qword, rState);
+        callWrap.addArgument(SizeX64::qword, luauRegAddress(vmRegOp(OP_A(inst))));
+        callWrap.addArgument(SizeX64::dword, uintOp(OP_B(inst)));
+        callWrap.addArgument(SizeX64::dword, intOp(OP_C(inst)));
+        callWrap.addArgument(SizeX64::dword, intOp(OP_D(inst)));
+        callWrap.call(qword[rNativeContext + offsetof(NativeContext, fastPcallSetup)]);
+
+        emitUpdateBase(build);
+
+        Label cont;
+
+        build.test(eax, eax);
+        build.jcc(ConditionX64::Less, cont);                        // Continue to next instruction on -1
+        build.jcc(ConditionX64::Greater, helpers.exitNoContinueVm); // Yield on 1
+
+        // Continue Luau call on 0
+        emitDispatchLuauCall(build, helpers);
+
+        build.setLabel(cont);
+        break;
+    }
     case IrCmd::DO_ARITH:
     {
         OperandX64 opb = OP_B(inst).kind == IrOpKind::VmReg ? luauRegAddress(vmRegOp(OP_B(inst))) : luauConstantAddress(vmConstOp(OP_B(inst)));
@@ -2315,6 +2374,17 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         checkSafeEnv(OP_A(inst), index, next);
         break;
     }
+    case IrCmd::CHECK_YIELDABLE:
+    {
+        ScopedRegX64 tmp1{regs, SizeX64::dword};
+        ScopedRegX64 tmp2{regs, SizeX64::dword};
+
+        build.movzx(tmp1.reg, word[rState + offsetof(lua_State, nCcalls)]);
+        build.movzx(tmp2.reg, word[rState + offsetof(lua_State, baseCcalls)]);
+        build.cmp(tmp1.reg, tmp2.reg);
+        jumpOrAbortOnUndef(ConditionX64::Above, OP_A(inst), index, next);
+        break;
+    }
     case IrCmd::CHECK_ARRAY_SIZE:
         if (OP_B(inst).kind == IrOpKind::Inst)
             build.cmp(dword[regOp(OP_A(inst)) + offsetof(LuaTable, sizearray)], regOp(OP_B(inst)));
@@ -2380,194 +2450,107 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
     }
     case IrCmd::CHECK_BUFFER_LEN:
     {
-        if (FFlag::LuauCodegenVmExitSync)
+        int minOffset = intOp(OP_C(inst));
+        int maxOffset = intOp(OP_D(inst));
+        CODEGEN_ASSERT(minOffset < maxOffset);
+
+        int accessSize = maxOffset - minOffset;
+        CODEGEN_ASSERT(accessSize > 0);
+
+        // Determine which registers we will need
+        bool hasIntegerCheck = OP_E(inst).kind != IrOpKind::Undef;
+        bool needsExtendedBoundsRegs = OP_B(inst).kind == IrOpKind::Inst && !(accessSize == 1 && minOffset == 0);
+
+        // For jumps to exit sync blocks to work, we need the same register allocation state at each potential taken branch
+        RegisterX64 regA = OP_A(inst).kind == IrOpKind::Inst ? regOp(OP_A(inst)) : noreg;
+        RegisterX64 regB = OP_B(inst).kind == IrOpKind::Inst ? regOp(OP_B(inst)) : noreg;
+        RegisterX64 regE = hasIntegerCheck ? regOp(OP_E(inst)) : noreg;
+
+        ScopedRegX64 tmpXmm{regs};
+        ScopedRegX64 tmp1{regs};
+        ScopedRegX64 tmp2{regs};
+
+        if (hasIntegerCheck)
+            tmpXmm.alloc(SizeX64::xmmword);
+
+        if (needsExtendedBoundsRegs)
         {
-            int minOffset = intOp(OP_C(inst));
-            int maxOffset = intOp(OP_D(inst));
-            CODEGEN_ASSERT(minOffset < maxOffset);
+            tmp1.alloc(SizeX64::qword);
+            tmp2.alloc(SizeX64::dword);
+        }
 
-            int accessSize = maxOffset - minOffset;
-            CODEGEN_ASSERT(accessSize > 0);
+        Label fresh;
 
-            // Determine which registers we will need
-            bool hasIntegerCheck = OP_E(inst).kind != IrOpKind::Undef;
-            bool needsExtendedBoundsRegs = OP_B(inst).kind == IrOpKind::Inst && !(accessSize == 1 && minOffset == 0);
+        // Check if we are acting not only as a guard for the size, but as a guard that offset represents an exact integer
+        if (hasIntegerCheck)
+        {
+            CODEGEN_ASSERT(getCmdValueKind(function.instOp(OP_B(inst)).cmd) == IrValueKind::Int);
+            CODEGEN_ASSERT(!producesDirtyHighRegisterBits(function.instOp(OP_B(inst)).cmd)); // Ensure that high register bits are cleared
 
-            // For jumps to exit sync blocks to work, we need the same register allocation state at each potential taken branch
-            RegisterX64 regA = OP_A(inst).kind == IrOpKind::Inst ? regOp(OP_A(inst)) : noreg;
-            RegisterX64 regB = OP_B(inst).kind == IrOpKind::Inst ? regOp(OP_B(inst)) : noreg;
-            RegisterX64 regE = hasIntegerCheck ? regOp(OP_E(inst)) : noreg;
+            // Convert integer back to double
+            build.vcvtsi2sd(tmpXmm.reg, tmpXmm.reg, regB);
 
-            ScopedRegX64 tmpXmm{regs};
-            ScopedRegX64 tmp1{regs};
-            ScopedRegX64 tmp2{regs};
+            build.vucomisd(tmpXmm.reg, regE); // Sets ZF=1 if equal or NaN, PF=1 on NaN
 
-            if (hasIntegerCheck)
-                tmpXmm.alloc(SizeX64::xmmword);
+            // We don't allow non-integer values
+            jumpOrAbortOnUndefNoFinalize(ConditionX64::NotZero, OP_F(inst), index, next, fresh); // exit on ZF=0
+            jumpOrAbortOnUndefNoFinalize(ConditionX64::Parity, OP_F(inst), index, next, fresh);  // exit on PF=1
+        }
 
-            if (needsExtendedBoundsRegs)
+        if (OP_B(inst).kind == IrOpKind::Inst)
+        {
+            CODEGEN_ASSERT(!producesDirtyHighRegisterBits(function.instOp(OP_B(inst)).cmd)); // Ensure that high register bits are cleared
+
+            if (accessSize == 1 && minOffset == 0)
             {
-                tmp1.alloc(SizeX64::qword);
-                tmp2.alloc(SizeX64::dword);
-            }
-
-            Label fresh;
-
-            // Check if we are acting not only as a guard for the size, but as a guard that offset represents an exact integer
-            if (hasIntegerCheck)
-            {
-                CODEGEN_ASSERT(getCmdValueKind(function.instOp(OP_B(inst)).cmd) == IrValueKind::Int);
-                CODEGEN_ASSERT(!producesDirtyHighRegisterBits(function.instOp(OP_B(inst)).cmd)); // Ensure that high register bits are cleared
-
-                // Convert integer back to double
-                build.vcvtsi2sd(tmpXmm.reg, tmpXmm.reg, regB);
-
-                build.vucomisd(tmpXmm.reg, regE); // Sets ZF=1 if equal or NaN, PF=1 on NaN
-
-                // We don't allow non-integer values
-                jumpOrAbortOnUndefNoFinalize(ConditionX64::NotZero, OP_F(inst), index, next, fresh); // exit on ZF=0
-                jumpOrAbortOnUndefNoFinalize(ConditionX64::Parity, OP_F(inst), index, next, fresh);  // exit on PF=1
-            }
-
-            if (OP_B(inst).kind == IrOpKind::Inst)
-            {
-                CODEGEN_ASSERT(!producesDirtyHighRegisterBits(function.instOp(OP_B(inst)).cmd)); // Ensure that high register bits are cleared
-
-                if (accessSize == 1 && minOffset == 0)
-                {
-                    // Simpler check for a single byte access
-                    build.cmp(dword[regA + offsetof(Buffer, len)], regB);
-                    jumpOrAbortOnUndefNoFinalize(ConditionX64::BelowEqual, OP_F(inst), index, next, fresh);
-                }
-                else
-                {
-                    // To perform the bounds check using a single branch, we take index that is limited to a 32 bit int
-                    // Max offset is then added using a 64 bit addition
-                    // This will make sure that addition will not wrap around for values like 0xffffffff
-
-                    if (minOffset >= 0)
-                    {
-                        build.lea(tmp1.reg, addr[qwordReg(regB) + maxOffset]);
-                    }
-                    else
-                    {
-                        // When the min offset is negative, we subtract it from offset first (in 32 bits)
-                        build.lea(dwordReg(tmp1.reg), addr[regB + minOffset]);
-
-                        // And then add the full access size like before
-                        build.lea(tmp1.reg, addr[tmp1.reg + accessSize]);
-                    }
-
-                    build.mov(tmp2.reg, dword[regA + offsetof(Buffer, len)]);
-                    build.cmp(qwordReg(tmp2.reg), tmp1.reg);
-                    jumpOrAbortOnUndefNoFinalize(ConditionX64::Below, OP_F(inst), index, next, fresh);
-                }
-            }
-            else if (OP_B(inst).kind == IrOpKind::Constant)
-            {
-                int offset = intOp(OP_B(inst));
-
-                int endOffset = FFlag::LuauCodegenFixBufferLenCheck ? maxOffset : accessSize;
-
-                // Constant folding can take care of it, but for safety we avoid overflow/underflow cases here
-                if (offset < 0 || unsigned(offset) + unsigned(endOffset) >= unsigned(INT_MAX))
-                    jumpOrAbortOnUndefNoFinalize(ConditionX64::Count, OP_F(inst), index, next, fresh);
-                else
-                    build.cmp(dword[regA + offsetof(Buffer, len)], offset + endOffset);
-
-                jumpOrAbortOnUndefNoFinalize(ConditionX64::Below, OP_F(inst), index, next, fresh);
+                // Simpler check for a single byte access
+                build.cmp(dword[regA + offsetof(Buffer, len)], regB);
+                jumpOrAbortOnUndefNoFinalize(ConditionX64::BelowEqual, OP_F(inst), index, next, fresh);
             }
             else
             {
-                CODEGEN_ASSERT(!"Unsupported instruction form");
-            }
+                // To perform the bounds check using a single branch, we take index that is limited to a 32 bit int
+                // Max offset is then added using a 64 bit addition
+                // This will make sure that addition will not wrap around for values like 0xffffffff
 
-            finalizeTargetLabel(OP_F(inst), index, fresh);
+                if (minOffset >= 0)
+                {
+                    build.lea(tmp1.reg, addr[qwordReg(regB) + maxOffset]);
+                }
+                else
+                {
+                    // When the min offset is negative, we subtract it from offset first (in 32 bits)
+                    build.lea(dwordReg(tmp1.reg), addr[regB + minOffset]);
+
+                    // And then add the full access size like before
+                    build.lea(tmp1.reg, addr[tmp1.reg + accessSize]);
+                }
+
+                build.mov(tmp2.reg, dword[regA + offsetof(Buffer, len)]);
+                build.cmp(qwordReg(tmp2.reg), tmp1.reg);
+                jumpOrAbortOnUndefNoFinalize(ConditionX64::Below, OP_F(inst), index, next, fresh);
+            }
+        }
+        else if (OP_B(inst).kind == IrOpKind::Constant)
+        {
+            int offset = intOp(OP_B(inst));
+
+            int endOffset = FFlag::LuauCodegenFixBufferLenCheck ? maxOffset : accessSize;
+
+            // Constant folding can take care of it, but for safety we avoid overflow/underflow cases here
+            if (offset < 0 || unsigned(offset) + unsigned(endOffset) >= unsigned(INT_MAX))
+                jumpOrAbortOnUndefNoFinalize(ConditionX64::Count, OP_F(inst), index, next, fresh);
+            else
+                build.cmp(dword[regA + offsetof(Buffer, len)], offset + endOffset);
+
+            jumpOrAbortOnUndefNoFinalize(ConditionX64::Below, OP_F(inst), index, next, fresh);
         }
         else
         {
-            int minOffset = intOp(OP_C(inst));
-            int maxOffset = intOp(OP_D(inst));
-            CODEGEN_ASSERT(minOffset < maxOffset);
-
-            int accessSize = maxOffset - minOffset;
-            CODEGEN_ASSERT(accessSize > 0);
-
-            // Check if we are acting not only as a guard for the size, but as a guard that offset represents an exact integer
-            if (OP_E(inst).kind != IrOpKind::Undef)
-            {
-                CODEGEN_ASSERT(getCmdValueKind(function.instOp(OP_B(inst)).cmd) == IrValueKind::Int);
-                CODEGEN_ASSERT(!producesDirtyHighRegisterBits(function.instOp(OP_B(inst)).cmd)); // Ensure that high register bits are cleared
-
-                ScopedRegX64 tmp{regs, SizeX64::xmmword};
-
-                // Convert integer back to double
-                build.vcvtsi2sd(tmp.reg, tmp.reg, regOp(OP_B(inst)));
-
-                build.vucomisd(tmp.reg, regOp(OP_E(inst))); // Sets ZF=1 if equal or NaN, PF=1 on NaN
-
-                // We don't allow non-integer values
-                jumpOrAbortOnUndef(ConditionX64::NotZero, OP_F(inst), index, next); // exit on ZF=0
-                jumpOrAbortOnUndef(ConditionX64::Parity, OP_F(inst), index, next);  // exit on PF=1
-            }
-
-            if (OP_B(inst).kind == IrOpKind::Inst)
-            {
-                CODEGEN_ASSERT(!producesDirtyHighRegisterBits(function.instOp(OP_B(inst)).cmd)); // Ensure that high register bits are cleared
-
-                if (accessSize == 1 && minOffset == 0)
-                {
-                    // Simpler check for a single byte access
-                    build.cmp(dword[regOp(OP_A(inst)) + offsetof(Buffer, len)], regOp(OP_B(inst)));
-                    jumpOrAbortOnUndef(ConditionX64::BelowEqual, OP_F(inst), index, next);
-                }
-                else
-                {
-                    ScopedRegX64 tmp1{regs, SizeX64::qword};
-                    ScopedRegX64 tmp2{regs, SizeX64::dword};
-
-                    // To perform the bounds check using a single branch, we take index that is limited to a 32 bit int
-                    // Max offset is then added using a 64 bit addition
-                    // This will make sure that addition will not wrap around for values like 0xffffffff
-
-                    if (minOffset >= 0)
-                    {
-                        build.lea(tmp1.reg, addr[qwordReg(regOp(OP_B(inst))) + maxOffset]);
-                    }
-                    else
-                    {
-                        // When the min offset is negative, we subtract it from offset first (in 32 bits)
-                        build.lea(dwordReg(tmp1.reg), addr[regOp(OP_B(inst)) + minOffset]);
-
-                        // And then add the full access size like before
-                        build.lea(tmp1.reg, addr[tmp1.reg + accessSize]);
-                    }
-
-                    build.mov(tmp2.reg, dword[regOp(OP_A(inst)) + offsetof(Buffer, len)]);
-                    build.cmp(qwordReg(tmp2.reg), tmp1.reg);
-
-                    jumpOrAbortOnUndef(ConditionX64::Below, OP_F(inst), index, next);
-                }
-            }
-            else if (OP_B(inst).kind == IrOpKind::Constant)
-            {
-                int offset = intOp(OP_B(inst));
-
-                int endOffset = FFlag::LuauCodegenFixBufferLenCheck ? maxOffset : accessSize;
-
-                // Constant folding can take care of it, but for safety we avoid overflow/underflow cases here
-                if (offset < 0 || unsigned(offset) + unsigned(endOffset) >= unsigned(INT_MAX))
-                    jumpOrAbortOnUndef(ConditionX64::Count, OP_F(inst), index, next);
-                else
-                    build.cmp(dword[regOp(OP_A(inst)) + offsetof(Buffer, len)], offset + endOffset);
-
-                jumpOrAbortOnUndef(ConditionX64::Below, OP_F(inst), index, next);
-            }
-            else
-            {
-                CODEGEN_ASSERT(!"Unsupported instruction form");
-            }
+            CODEGEN_ASSERT(!"Unsupported instruction form");
         }
+
+        finalizeTargetLabel(OP_F(inst), index, fresh);
         break;
     }
     case IrCmd::CHECK_USERDATA_TAG:
@@ -2746,26 +2729,13 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         callWrap.addArgument(SizeX64::qword, rState);
         callWrap.addArgument(SizeX64::dword, vmRegOp(OP_A(inst)));
         callWrap.addArgument(SizeX64::dword, intOp(OP_B(inst)));
+        callWrap.call(qword[rNativeContext + offsetof(NativeContext, forgLoopNonTableFallback)]);
 
-        if (FFlag::LuauYieldIter2)
-        {
-            callWrap.call(qword[rNativeContext + offsetof(NativeContext, forgLoopNonTableFallback)]);
+        emitUpdateBase(build);
 
-            emitUpdateBase(build);
-
-            build.test(eax, eax);
-            build.jcc(ConditionX64::Less, helpers.exitNoContinueVm);
-            build.jcc(ConditionX64::Greater, labelOp(OP_C(inst)));
-        }
-        else
-        {
-            callWrap.call(qword[rNativeContext + offsetof(NativeContext, forgLoopNonTableFallback_DEPRECATED)]);
-
-            emitUpdateBase(build);
-
-            build.test(al, al);
-            build.jcc(ConditionX64::NotZero, labelOp(OP_C(inst)));
-        }
+        build.test(eax, eax);
+        build.jcc(ConditionX64::Less, helpers.exitNoContinueVm);
+        build.jcc(ConditionX64::Greater, labelOp(OP_C(inst)));
 
         jumpOrFallthrough(blockOp(OP_D(inst)), next);
         break;
@@ -3771,7 +3741,7 @@ void IrLoweringX64::startBlock(const IrBlock& curr)
             curr.kind == IrBlockKind::Fallback ? CodeGenCounter::FallbackBlockExecuted : CodeGenCounter::RegularBlockExecuted, curr.startpc
         );
 
-    if (FFlag::LuauCodegenVmExitSync && curr.kind == IrBlockKind::ExitSync)
+    if (curr.kind == IrBlockKind::ExitSync)
         regs.setupExitSyncEntry(function.getBlockIndex(curr));
 }
 
@@ -3790,8 +3760,8 @@ void IrLoweringX64::finishBlock(const IrBlock& curr, const IrBlock& next)
 
 void IrLoweringX64::finishFunction()
 {
-    if (build.logText)
-        build.logAppend("; interrupt handlers\n");
+    if (logger && logger->options.includeAssembly)
+        logger->formatAppend("; interrupt handlers\n");
 
     for (InterruptHandler& handler : interruptHandlers)
     {
@@ -3801,8 +3771,8 @@ void IrLoweringX64::finishFunction()
         build.jmp(helpers.interrupt);
     }
 
-    if (build.logText)
-        build.logAppend("; exit handlers\n");
+    if (logger && logger->options.includeAssembly)
+        logger->formatAppend("; exit handlers\n");
 
     for (ExitHandler& handler : exitHandlers)
     {
@@ -3831,16 +3801,8 @@ void IrLoweringX64::finishFunction()
 
     if (stats)
     {
-        if (FFlag::LuauCodegenNoEcbData)
-        {
-            if (regs.maxUsedSlot > kSpillSlots)
-                stats->regAllocErrors++;
-        }
-        else
-        {
-            if (regs.maxUsedSlot > kSpillSlots_DEPRECATED + kExtraSpillSlots_DEPRECATED)
-                stats->regAllocErrors++;
-        }
+        if (regs.maxUsedSlot > kSpillSlots)
+            stats->regAllocErrors++;
 
         if (regs.maxUsedSlot > stats->maxSpillSlotsUsed)
             stats->maxSpillSlotsUsed = regs.maxUsedSlot;
@@ -3850,16 +3812,8 @@ void IrLoweringX64::finishFunction()
 bool IrLoweringX64::hasError() const
 {
     // If register allocator had to use more stack slots than we have available, this function can't run natively
-    if (FFlag::LuauCodegenNoEcbData)
-    {
-        if (regs.maxUsedSlot > kSpillSlots)
-            return true;
-    }
-    else
-    {
-        if (regs.maxUsedSlot > kSpillSlots_DEPRECATED + kExtraSpillSlots_DEPRECATED)
-            return true;
-    }
+    if (regs.maxUsedSlot > kSpillSlots)
+        return true;
 
     return false;
 }
@@ -3887,7 +3841,7 @@ Label& IrLoweringX64::getTargetLabel(IrOp op, uint32_t index, Label& fresh)
 
 void IrLoweringX64::finalizeTargetLabel(IrOp op, uint32_t index, Label& fresh)
 {
-    if (FFlag::LuauCodegenVmExitSync && op.kind == IrOpKind::Block && function.blockOp(op).kind == IrBlockKind::ExitSync)
+    if (op.kind == IrOpKind::Block && function.blockOp(op).kind == IrBlockKind::ExitSync)
     {
         // If branches were emitted via jumpOrAbortOnUndefNoFinalize, verify no allocations happened since
         if (exitSyncInstIdx == index)
@@ -3915,8 +3869,6 @@ void IrLoweringX64::jumpOrFallthrough(IrBlock& target, const IrBlock& next)
 
 void IrLoweringX64::jumpOrAbortOnUndefNoFinalize(ConditionX64 cond, IrOp target, uint32_t index, const IrBlock& next, Label& fresh)
 {
-    CODEGEN_ASSERT(FFlag::LuauCodegenVmExitSync);
-
     // Validate that each branch to an exit sync block inside a single instruction will never see different register allocation state
     if (target.kind == IrOpKind::Block && function.blockOp(target).kind == IrBlockKind::ExitSync)
     {
@@ -3962,43 +3914,9 @@ void IrLoweringX64::jumpOrAbortOnUndefNoFinalize(ConditionX64 cond, IrOp target,
 
 void IrLoweringX64::jumpOrAbortOnUndef(ConditionX64 cond, IrOp target, uint32_t index, const IrBlock& next)
 {
-    if (FFlag::LuauCodegenVmExitSync)
-    {
-        Label fresh;
-        jumpOrAbortOnUndefNoFinalize(cond, target, index, next, fresh);
-        finalizeTargetLabel(target, index, fresh);
-    }
-    else
-    {
-        Label fresh;
-        Label& label = getTargetLabel(target, index, fresh);
-
-        if (target.kind == IrOpKind::Undef)
-        {
-            if (cond == ConditionX64::Count)
-            {
-                build.ud2(); // Unconditional jump to abort is just an abort
-            }
-            else
-            {
-                build.jcc(getNegatedCondition(cond), label);
-                build.ud2();
-                build.setLabel(label);
-            }
-        }
-        else if (cond == ConditionX64::Count)
-        {
-            // Unconditional jump can be skipped if it's a fallthrough
-            if (target.kind == IrOpKind::VmExit || !isFallthroughBlock(blockOp(target), next))
-                build.jmp(label);
-        }
-        else
-        {
-            build.jcc(cond, label);
-        }
-
-        finalizeTargetLabel(target, index, fresh);
-    }
+    Label fresh;
+    jumpOrAbortOnUndefNoFinalize(cond, target, index, next, fresh);
+    finalizeTargetLabel(target, index, fresh);
 }
 
 void IrLoweringX64::jumpOrAbortOnUndef(IrOp target, uint32_t index, const IrBlock& next)
@@ -4060,8 +3978,8 @@ void IrLoweringX64::allocAndIncrementCounterAt(CodeGenCounter kind, uint32_t pcp
     if (!function.recordCounters)
         return;
 
-    if (build.logText)
-        build.logAppend("; counter kind %u at pcpos %d\n", unsigned(kind), pcpos);
+    if (logger && logger->options.includeAssembly)
+        logger->formatAppend("; counter kind %u at pcpos %d\n", unsigned(kind), pcpos);
 
     // {uint32_t, uint32_t, uint64_t}
     function.extraNativeData.push_back(unsigned(kind));
@@ -4202,8 +4120,8 @@ RegisterX64 IrLoweringX64::regOp(IrOp op)
 
 OperandX64 IrLoweringX64::bufferAddrOp(IrOp bufferOp, IrOp indexOp, uint8_t tag)
 {
-    CODEGEN_ASSERT(tag == LUA_TUSERDATA || tag == LUA_TBUFFER);
-    int dataOffset = tag == LUA_TBUFFER ? offsetof(Buffer, data) : offsetof(Udata, data);
+    CODEGEN_ASSERT(tag == LUA_TUSERDATA || tag == LUA_TBUFFER || tag == LUA_TVECTOR);
+    int dataOffset = tag == LUA_TBUFFER ? offsetof(Buffer, data) : tag == LUA_TVECTOR ? offsetof(LuauVector, v) : offsetof(Udata, data);
 
     if (indexOp.kind == IrOpKind::Inst)
     {

@@ -3,7 +3,7 @@
 
 #include "Luau/Bytecode.h"
 #include "Luau/Common.h"
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrData.h"
 
 #include <vector>
@@ -20,7 +20,7 @@ struct HostIrHooks;
 
 struct IrBuilder
 {
-    IrBuilder(const HostIrHooks& hostHooks);
+    IrBuilder(const HostIrHooks& hostHooks, const VmEnvironmentInfo& envInfo);
 
     void buildFunctionIr(Proto* proto);
 
@@ -134,7 +134,7 @@ struct IrBuilder
         }
     };
 
-    DenseHashMap<ConstantKey, uint32_t, ConstantKeyHash> constantMap;
+    DenseHashMap2<ConstantKey, uint32_t, ConstantKeyHash> constantMap;
 };
 
 } // namespace CodeGen

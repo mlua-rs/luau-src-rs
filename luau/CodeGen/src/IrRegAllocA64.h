@@ -1,7 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrData.h"
 #include "Luau/RegisterA64.h"
 
@@ -14,6 +14,7 @@ namespace Luau
 namespace CodeGen
 {
 
+struct LogBuilder;
 struct LoweringStats;
 
 namespace A64
@@ -37,6 +38,7 @@ using ExitSyncArgsA64 = SmallVector<ExitSyncArgA64, 2>;
 struct IrRegAllocA64
 {
     IrRegAllocA64(
+        LogBuilder* logger,
         AssemblyBuilderA64& build,
         IrFunction& function,
         LoweringStats* stats,
@@ -100,9 +102,6 @@ struct IrRegAllocA64
 
     uint32_t findInstructionWithFurthestNextUse(Set& set) const;
 
-    bool isExtraSpillSlot_DEPRECATED(unsigned slot) const;
-    int getExtraSpillAddressOffset_DEPRECATED(unsigned slot) const;
-
     Set& getSet(KindA64 kind);
 
     uint32_t getAllocToken() const
@@ -110,6 +109,7 @@ struct IrRegAllocA64
         return allocActionCount;
     }
 
+    LogBuilder* logger = nullptr;
     AssemblyBuilderA64& build;
     IrFunction& function;
     LoweringStats* stats = nullptr;
@@ -123,7 +123,7 @@ struct IrRegAllocA64
     // which 8-byte slots are free
     uint64_t freeSpillSlots = 0;
 
-    DenseHashMap<uint32_t, ExitSyncArgsA64> exitSyncArgs{~0u};
+    DenseHashMap2<uint32_t, ExitSyncArgsA64> exitSyncArgs;
 
     uint32_t allocActionCount = 0;
 

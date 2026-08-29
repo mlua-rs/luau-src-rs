@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <math.h>
 
-LUAU_FASTFLAG(LuauCodegenVmExitSync)
+LUAU_FASTFLAGVARIABLE(LuauCodegenSkipDeadPredecessorTags)
 
 namespace Luau
 {
@@ -60,6 +60,7 @@ int getOpLength(LuauOpcode op)
     case LOP_NEWCLASSMEMBER:
     case LOP_CALLFB:
     case LOP_CMPPROTO:
+    case LOP_NEWCLASS:
         return 2;
 
     default:
@@ -120,6 +121,7 @@ bool isFastCall(LuauOpcode op)
     case LOP_FASTCALL2:
     case LOP_FASTCALL2K:
     case LOP_FASTCALL3:
+    case LOP_FASTPCALL:
         return true;
 
     default:
@@ -268,6 +270,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::JUMP_IF_FALSY:
     case IrCmd::JUMP_EQ_TAG:
     case IrCmd::JUMP_CMP_INT:
+    case IrCmd::JUMP_CMP_INT64:
     case IrCmd::JUMP_EQ_POINTER:
     case IrCmd::JUMP_CMP_NUM:
     case IrCmd::JUMP_CMP_FLOAT:
@@ -287,6 +290,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
         return IrValueKind::Int;
     case IrCmd::TRY_CALL_FASTGETTM:
     case IrCmd::NEW_USERDATA:
+    case IrCmd::NEW_VECTOR:
         return IrValueKind::Pointer;
     case IrCmd::INT64_TO_NUM:
     case IrCmd::INT_TO_NUM:
@@ -316,6 +320,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::INVOKE_FASTCALL:
         return IrValueKind::Int;
     case IrCmd::CHECK_FASTCALL_RES:
+    case IrCmd::INVOKE_FASTPCALL:
     case IrCmd::DO_ARITH:
     case IrCmd::DO_LEN:
     case IrCmd::GET_TABLE:
@@ -331,6 +336,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::CHECK_READONLY:
     case IrCmd::CHECK_NO_METATABLE:
     case IrCmd::CHECK_SAFE_ENV:
+    case IrCmd::CHECK_YIELDABLE:
     case IrCmd::CHECK_ARRAY_SIZE:
     case IrCmd::CHECK_SLOT_MATCH:
     case IrCmd::CHECK_NODE_NO_NEXT:
@@ -1140,6 +1146,15 @@ void foldConstants(IrBuilder& build, IrFunction& function, IrBlock& block, uint3
                 replace(function, block, index, {IrCmd::JUMP, {OP_E(inst)}});
         }
         break;
+    case IrCmd::JUMP_CMP_INT64:
+        if (OP_A(inst).kind == IrOpKind::Constant && OP_B(inst).kind == IrOpKind::Constant)
+        {
+            if (compare(function.int64Op(OP_A(inst)), function.int64Op(OP_B(inst)), conditionOp(OP_C(inst))))
+                replace(function, block, index, {IrCmd::JUMP, {OP_D(inst)}});
+            else
+                replace(function, block, index, {IrCmd::JUMP, {OP_E(inst)}});
+        }
+        break;
     case IrCmd::JUMP_CMP_NUM:
         if (OP_A(inst).kind == IrOpKind::Constant && OP_B(inst).kind == IrOpKind::Constant)
         {
@@ -1788,18 +1803,9 @@ std::vector<uint32_t> getSortedBlockOrder(IrFunction& function)
             const IrBlock& a = function.blocks[idxA];
             const IrBlock& b = function.blocks[idxB];
 
-            if (FFlag::LuauCodegenVmExitSync)
-            {
-                // Place fallback blocks at the end followed by exit sync blocks
-                if (getBlockKindPriority(a.kind) != getBlockKindPriority(b.kind))
-                    return getBlockKindPriority(a.kind) < getBlockKindPriority(b.kind);
-            }
-            else
-            {
-                // Place fallback blocks at the end
-                if ((a.kind == IrBlockKind::Fallback) != (b.kind == IrBlockKind::Fallback))
-                    return (a.kind == IrBlockKind::Fallback) < (b.kind == IrBlockKind::Fallback);
-            }
+            // Place fallback blocks at the end followed by exit sync blocks
+            if (getBlockKindPriority(a.kind) != getBlockKindPriority(b.kind))
+                return getBlockKindPriority(a.kind) < getBlockKindPriority(b.kind);
 
             // Try to order by instruction order
             if (a.sortkey != b.sortkey)
@@ -1884,6 +1890,9 @@ void propagateTagsFromPredecessors(
 
     for (uint32_t predIdx : preds)
     {
+        if (FFlag::LuauCodegenSkipDeadPredecessorTags && function.blocks[predIdx].kind == IrBlockKind::Dead)
+            continue;
+
         if (predIdx >= numBlockExitTags)
             return;
 
@@ -1896,6 +1905,9 @@ void propagateTagsFromPredecessors(
 
     for (uint32_t predIdx : preds)
     {
+        if (FFlag::LuauCodegenSkipDeadPredecessorTags && function.blocks[predIdx].kind == IrBlockKind::Dead)
+            continue;
+
         const std::vector<uint8_t>& predTags = function.blockExitTags[predIdx];
 
         CODEGEN_ASSERT(minRegsKnown <= predTags.size());
