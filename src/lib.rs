@@ -32,6 +32,8 @@ pub struct Artifacts {
     lib_dir: PathBuf,
     libs: Vec<String>,
     cpp_stdlib: Option<String>,
+    extra_lib_dirs: Vec<PathBuf>,
+    extra_libs: Vec<String>,
 }
 
 impl Default for Build {
@@ -202,6 +204,34 @@ impl Build {
             }
         }
 
+        let is_wasm_unknown = target == "wasm32-unknown-unknown";
+        let wasi = if is_wasm_unknown || target.starts_with("wasm32-wasi") {
+            println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
+
+            let sysroot = env::var_os("WASI_SYSROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| panic!("WASI_SYSROOT is not set"));
+            let triple = if is_wasm_unknown {
+                "wasm32-wasip1"
+            } else {
+                target
+            };
+
+            config
+                .flag(format!("--target={}", triple))
+                .flag(format!("--sysroot={}", sysroot.display()))
+                .flag("-isystem")
+                .flag(sysroot.join("include").join(triple).join("eh/c++/v1"))
+                .flag("-fexceptions")
+                .flag("-fwasm-exceptions")
+                .flag("-mllvm")
+                .flag("-wasm-use-legacy-eh=false")
+                .define("_WASI_EMULATED_PROCESS_CLOCKS", None);
+            Some((sysroot, triple))
+        } else {
+            None
+        };
+
         if target.ends_with("emscripten") {
             // cc-rs unconditionally adds `-fno-exceptions` for wasm32.
             // We need to re-enable exceptions and switch to the
@@ -250,8 +280,8 @@ impl Build {
                 panic!("codegen (jit) requires the VM to be enabled");
             }
 
-            if target.ends_with("emscripten") {
-                panic!("codegen (jit) is not supported on emscripten");
+            if target.starts_with("wasm") {
+                panic!("codegen (jit) is not supported on wasm");
             }
 
             config
@@ -388,7 +418,7 @@ impl Build {
                 .compile(vm_lib_name);
         }
 
-        let libs = vec![
+        let libs = [
             (ast_lib_name, self.enable_compiler),
             (bytecode_lib_name, enable_bytecode),
             (codegen_lib_name, self.enable_codegen),
@@ -402,15 +432,38 @@ impl Build {
         ]
         .into_iter()
         .filter_map(|(lib, enabled)| if enabled { Some(lib.to_string()) } else { None })
-        .collect();
+        .collect::<Vec<_>>();
 
-        let artifacts = Artifacts {
-            lib_dir: build_dir,
-            libs,
-            cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
+        let cpp_stdlib = match wasi {
+            Some { .. } => None,
+            None => Self::get_cpp_link_stdlib(target, host),
+        };
+        let (extra_lib_dirs, extra_libs) = if let Some((sysroot, triple)) = wasi {
+            let lib_dir = sysroot.join("lib").join(triple);
+            let extra_lib_dirs = vec![lib_dir.join("eh"), lib_dir];
+            let extra_libs = [
+                ("c", is_wasm_unknown),
+                ("c++", true),
+                ("c++abi", true),
+                ("unwind", true),
+                ("wasi-emulated-process-clocks", true),
+            ]
+            .into_iter()
+            .filter_map(|(lib, enabled)| if enabled { Some(lib.to_string()) } else { None })
+            .collect::<Vec<_>>();
+
+            (extra_lib_dirs, extra_libs)
+        } else {
+            (Vec::new(), Vec::new())
         };
 
-        artifacts
+        Artifacts {
+            lib_dir: build_dir,
+            libs,
+            cpp_stdlib,
+            extra_lib_dirs,
+            extra_libs,
+        }
     }
 
     /// Returns the C++ standard library:
@@ -457,7 +510,10 @@ impl Artifacts {
 
     pub fn print_cargo_metadata(&self) {
         println!("cargo:rustc-link-search=native={}", self.lib_dir.display());
-        for lib in &self.libs {
+        for dir in &self.extra_lib_dirs {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+        }
+        for lib in self.libs.iter().chain(&self.extra_libs) {
             println!("cargo:rustc-link-lib=static={lib}");
         }
         if let Some(ref cpp_stdlib) = self.cpp_stdlib {
