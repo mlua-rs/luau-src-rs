@@ -63,6 +63,9 @@ public:
     struct ClassShape
     {
         int32_t className;
+        uint8_t numPrivateInstanceProps = 0;
+        uint8_t numPrivateStaticProps = 0;
+        // We only keep names for public properties. Private fields are indexed by their statically determined offsets
         std::vector<int32_t> propertyNames;
         std::vector<int32_t> methodNames;
     };
@@ -86,7 +89,10 @@ public:
     int32_t addConstantTable(const TableShape& shape);
     int32_t addConstantClosure(uint32_t fid);
 
-    uint32_t addFbSlot(LuauFeedbackType t);
+    uint32_t addFbSlot_DEPRECATED(LuauFeedbackType t);
+    uint32_t addFbSlot_DEPRECATED(LuauFeedbackType t, uint32_t pc);
+    uint32_t addCallTargetSlot(uint32_t pc);
+    uint32_t addConstructSlot(uint32_t shapecid);
 
     int16_t addChildFunction(uint32_t fid);
     int32_t addClassShape(ClassShape shape);
@@ -336,7 +342,26 @@ protected:
     std::vector<TableShape> tableShapes;
     std::vector<ClassShape> classShapes;
 
-    std::vector<uint32_t> fbSlots;
+    struct FeedbackSlot
+    {
+        LuauFeedbackType kind;
+
+        union
+        {
+            struct
+            {
+                uint32_t pc;
+            } callTarget;
+
+            struct
+            {
+                uint32_t shape;
+            } construct;
+        };
+    };
+
+    std::vector<FeedbackSlot> fbSlots;
+    std::vector<uint32_t> fbSlots_DEPRECATED;
 
     bool hasLongJumps = false;
 

@@ -8,11 +8,12 @@
 
 #include <algorithm>
 #include <limits>
+
 #include <math.h>
+#include <stdio.h>
 
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAG(LuauExportValueSyntax)
-LUAU_FASTFLAGVARIABLE(LuauPrettyPrintVisualizeIndexerAccess)
 LUAU_FASTFLAG(LuauExperimentalIfLocalSyntax)
 
 namespace
@@ -1381,7 +1382,7 @@ struct Printer
                         [&](const AstClassProperty& prop)
                         {
                             writer.advance(prop.qualifierLocation.begin);
-                            writer.keyword("public");
+                            writer.keyword(prop.access == AstClassAccess::Private ? "private" : "public");
                             writer.advance(prop.nameLocation.begin);
                             writer.identifier(prop.name.value);
                             if (writeTypes && prop.ty)
@@ -1397,7 +1398,7 @@ struct Printer
                             if (method.qualifierLocation)
                             {
                                 writer.advance(method.qualifierLocation->begin);
-                                writer.keyword("public");
+                                writer.keyword(method.access == AstClassAccess::Private ? "private" : "public");
                             }
                             writer.advance(method.keywordLocation.begin);
                             writer.keyword("function");
@@ -1916,15 +1917,12 @@ struct Printer
             {
                 if (a->props.size == 0 && indexType && indexType->name == "number")
                 {
-                    if (FFlag::LuauPrettyPrintVisualizeIndexerAccess)
+                    if (a->indexer->access != AstTableAccess::ReadWrite)
                     {
-                        if (a->indexer->access != AstTableAccess::ReadWrite)
-                        {
-                            if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
-                                advance(accessLocation->begin);
+                        if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
+                            advance(accessLocation->begin);
 
-                            writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
-                        }
+                        writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
                     }
 
                     visualizeTypeAnnotation(*a->indexer->resultType);
@@ -1948,18 +1946,15 @@ struct Printer
                     {
                         comma();
 
-                        if (FFlag::LuauPrettyPrintVisualizeIndexerAccess)
+                        if (a->indexer->access != AstTableAccess::ReadWrite)
                         {
-                            if (a->indexer->access != AstTableAccess::ReadWrite)
-                            {
-                                if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
-                                    advance(accessLocation->begin);
+                            if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
+                                advance(accessLocation->begin);
 
-                                writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
-                            }
-
-                            advance(a->indexer->location.begin);
+                            writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
                         }
+
+                        advance(a->indexer->location.begin);
 
                         writer.symbol("[");
                         visualizeTypeAnnotation(*a->indexer->indexType);

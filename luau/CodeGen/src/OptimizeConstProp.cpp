@@ -10,13 +10,15 @@
 #include "lobject.h"
 #include "lstate.h"
 
-#include <limits.h>
-#include <math.h>
-
 #include <algorithm>
 #include <array>
+#include <tuple>
+#include <string_view>
 #include <utility>
 #include <vector>
+
+#include <limits.h>
+#include <math.h>
 
 LUAU_FASTINTVARIABLE(LuauCodeGenMinLinearBlockPath, 3)
 LUAU_FASTINTVARIABLE(LuauCodeGenReuseSlotLimit, 64)
@@ -24,13 +26,16 @@ LUAU_FASTINTVARIABLE(LuauCodeGenReuseUdataTagLimit, 64)
 LUAU_FASTINTVARIABLE(LuauCodeGenLiveSlotReuseLimit, 8)
 LUAU_FASTFLAGVARIABLE(DebugLuauAbortingChecks)
 LUAU_FASTFLAGVARIABLE(LuauCodegenPropagateFallbackTags)
+LUAU_FASTFLAGVARIABLE(LuauCodegenNoZeroScale)
 LUAU_FLAGVERSION(LuauCodegenPropagateFallbackTags, 2)
-LUAU_FASTFLAGVARIABLE(LuauCodegenNoLinearFastpcall)
+LUAU_FASTFLAGVARIABLE(LuauCodegenLimitVersionsExtra)
 
 namespace Luau
 {
 namespace CodeGen
 {
+
+constexpr uint32_t kRegisterVersionLimit = 0x0007ffff;
 
 // Data we know about the register value
 struct RegisterInfo
@@ -175,6 +180,9 @@ struct ConstPropState
             {
                 info->tag = tag;
                 info->version++;
+
+                if (info->version == kRegisterVersionLimit)
+                    reachedLimits = true;
             }
         }
     }
@@ -197,6 +205,9 @@ struct ConstPropState
             {
                 info->value = value;
                 info->version++;
+
+                if (info->version == kRegisterVersionLimit)
+                    reachedLimits = true;
             }
         }
     }
@@ -214,6 +225,9 @@ struct ConstPropState
         }
 
         reg.version++;
+
+        if (reg.version == kRegisterVersionLimit)
+            reachedLimits = true;
     }
 
     void invalidateTag(IrOp regOp)
@@ -394,7 +408,7 @@ struct ConstPropState
     {
         CODEGEN_ASSERT(op.kind == IrOpKind::VmReg);
         uint32_t version = regs[vmRegOp(op)].version;
-        CODEGEN_ASSERT(version <= 0xffffff);
+        CODEGEN_ASSERT(version <= kRegisterVersionLimit);
         op.index = vmRegOp(op) | (version << 8);
         return IrInst{loadCmd, {op}};
     }
@@ -624,7 +638,7 @@ struct ConstPropState
         IrOp op = OP_A(loadInst);
         CODEGEN_ASSERT(op.kind == IrOpKind::VmUpvalue);
         uint32_t version = regs[vmUpvalueOp(op)].version;
-        CODEGEN_ASSERT(version <= 0xffffff);
+        CODEGEN_ASSERT(version <= kRegisterVersionLimit);
         op.index = vmUpvalueOp(OP_A(loadInst)) | (version << 8);
         return IrInst{loadInst.cmd, {op}};
     }
@@ -745,12 +759,14 @@ struct ConstPropState
                 base.offset -= int(*rhsNum) * base.scale;
                 base.op = OP_A(inst);
             }
-            else if (inst.cmd == IrCmd::MUL_NUM && lhsNum && isValidDoubleForImmediate(*lhsNum))
+            else if (inst.cmd == IrCmd::MUL_NUM && lhsNum && isValidDoubleForImmediate(*lhsNum) &&
+                     (!FFlag::LuauCodegenNoZeroScale || int(*lhsNum) != 0))
             {
                 base.scale *= int(*lhsNum);
                 base.op = OP_B(inst);
             }
-            else if (inst.cmd == IrCmd::MUL_NUM && rhsNum && isValidDoubleForImmediate(*rhsNum))
+            else if (inst.cmd == IrCmd::MUL_NUM && rhsNum && isValidDoubleForImmediate(*rhsNum) &&
+                     (!FFlag::LuauCodegenNoZeroScale || int(*rhsNum) != 0))
             {
                 base.scale *= int(*rhsNum);
                 base.op = OP_A(inst);
@@ -1345,6 +1361,7 @@ struct ConstPropState
         maxReg = 0;
         instPos = 0u;
 
+        reachedLimits = false;
         inSafeEnv = false;
         checkedGc = false;
 
@@ -1376,6 +1393,7 @@ struct ConstPropState
     // Number of the instruction being processed
     uint32_t instPos = 0;
 
+    bool reachedLimits = false;
     bool inSafeEnv = false;
     bool checkedGc = false;
 
@@ -1563,6 +1581,11 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_TABLE_INSERT:
         state.invalidateHeap();
         return; // table.insert does not modify result registers.
+    case LBF_TABLE_CLEAR:
+        state.invalidateHeap();
+        return; // table.clear does not modify result registers.
+    case LBF_TABLE_CREATE:
+        break;
     case LBF_RAWSET:
         state.invalidateHeap();
         break;
@@ -2358,7 +2381,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
         if (bufferOffset)
         {
             // Negative offsets and offsets overflowing signed integer will jump to fallback, no need to keep the check
-            if (*bufferOffset < 0 || unsigned(*bufferOffset) + unsigned(accessSize) >= unsigned(INT_MAX))
+            if (*bufferOffset < 0 || *bufferOffset + minOffset < 0 || unsigned(*bufferOffset) + unsigned(accessSize) >= unsigned(INT_MAX))
             {
                 replace(function, block, index, {IrCmd::JUMP, {OP_F(inst)}});
                 break;
@@ -2950,12 +2973,6 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     {
         IrInst* src = function.asInstOp(OP_A(inst));
 
-        if (src && src->cmd == IrCmd::INT64_TO_NUM)
-        {
-            substitute(function, inst, OP_A(src));
-            break;
-        }
-
         if (src && src->cmd == IrCmd::ADD_NUM)
         {
             if (std::optional<double> arg = function.asDoubleOp(OP_B(src)); arg && *arg == 0.0)
@@ -3256,6 +3273,9 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
 
         state.saveTag(OP_A(inst), LUA_TNUMBER);
         break;
+    case IrCmd::CONSTRUCT:
+        state.invalidate(OP_A(inst));
+        break;
     case IrCmd::GET_TABLE:
         state.invalidate(OP_A(inst));
         state.invalidateUserCall();
@@ -3450,6 +3470,31 @@ static void snapshotFallbackEntryTags(IrFunction& function, IrInst& inst, ConstP
     );
 }
 
+static void invalidateFallbackEntryTags(IrFunction& function, IrInst& inst)
+{
+    visitArguments(
+        inst,
+        [&](IrOp op)
+        {
+            if (op.kind != IrOpKind::Block)
+                return;
+
+            const IrBlock& block = function.blockOp(op);
+
+            if (block.kind != IrBlockKind::Fallback)
+                return;
+
+            uint32_t blockIdx = function.getBlockIndex(block);
+            std::vector<uint8_t>& tags = function.fallbackEntryTags[blockIdx];
+
+            if (tags.empty())
+                tags.push_back(kUnknownTag);
+            else
+                tags.assign(tags.size(), kUnknownTag);
+        }
+    );
+}
+
 static void constPropInBlock(IrBuilder& build, IrBlock& block, ConstPropState& state)
 {
     IrFunction& function = build.function;
@@ -3467,13 +3512,26 @@ static void constPropInBlock(IrBuilder& build, IrBlock& block, ConstPropState& s
 
         foldConstants(build, function, block, index);
 
+        if (FFlag::LuauCodegenLimitVersionsExtra)
+        {
+            // If limits have been reached, substitutions and folds still apply
+            if (state.reachedLimits)
+            {
+                // Fallback entry data is no longer available
+                if (FFlag::LuauCodegenPropagateFallbackTags && !isPseudo(inst.cmd))
+                    invalidateFallbackEntryTags(function, inst);
+
+                continue;
+            }
+        }
+
         if (FFlag::LuauCodegenPropagateFallbackTags && !isPseudo(inst.cmd))
             snapshotFallbackEntryTags(function, inst, state);
 
         constPropInInst(state, build, function, block, inst, index);
 
         // Optimizations might have killed the current block
-        if (block.kind == IrBlockKind::Dead)
+        if (block.kind == IrBlockKind::Dead || (!FFlag::LuauCodegenLimitVersionsExtra && state.reachedLimits))
             break;
     }
 }
@@ -3502,13 +3560,19 @@ static void constPropInBlockChain(IrBuilder& build, std::vector<uint8_t>& visite
         constPropInBlock(build, *block, state);
 
         // Optimizations might have killed the current block
-        if (block->kind == IrBlockKind::Dead)
+        if (block->kind == IrBlockKind::Dead || (!FFlag::LuauCodegenLimitVersionsExtra && state.reachedLimits))
             break;
 
         // Blocks in a chain are guaranteed to follow each other
         // We force that by giving all blocks the same sorting key, but consecutive chain keys
         block->sortkey = startSortkey;
         block->chainkey = chainPos++;
+
+        if (FFlag::LuauCodegenLimitVersionsExtra)
+        {
+            if (state.reachedLimits)
+                break;
+        }
 
         IrInst& termInst = function.instructions[block->finish];
 
@@ -3589,7 +3653,7 @@ static bool includeBlockInLinearPath(IrFunction& function, const IrBlock& block)
             return false;
 
         // Same rule applies to fast pcall path as it acts as a call
-        if (FFlag::LuauCodegenNoLinearFastpcall && inst.cmd == IrCmd::INVOKE_FASTPCALL)
+        if (inst.cmd == IrCmd::INVOKE_FASTPCALL)
             return false;
     }
 
@@ -3717,6 +3781,9 @@ static void tryCreateLinearBlock(IrBuilder& build, std::vector<uint8_t>& visited
     setupBlockEntryState(build, function, startingBlock, state);
 
     constPropInBlock(build, startingBlock, state);
+
+    if (state.reachedLimits)
+        return;
 
     // Verify that target hasn't changed
     if (startingBlock.finish != termInstIdx || OP_A(function.instructions[termInstIdx]).index != targetBlockIdx)
