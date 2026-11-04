@@ -13,6 +13,16 @@ pub struct Build {
     use_longjmp: bool,
     // Enable code generator (jit)
     enable_codegen: bool,
+    // Enable the compiler
+    enable_compiler: bool,
+    // Enable the config library
+    enable_config: bool,
+    // Enable the custom library
+    enable_custom: bool,
+    // Enable the require library
+    enable_require: bool,
+    // Enable the VM
+    enable_vm: bool,
     // Vector size, must be 3 (default) or 4
     vector_size: usize,
 }
@@ -22,6 +32,8 @@ pub struct Artifacts {
     lib_dir: PathBuf,
     libs: Vec<String>,
     cpp_stdlib: Option<String>,
+    extra_lib_dirs: Vec<PathBuf>,
+    extra_libs: Vec<String>,
 }
 
 impl Default for Build {
@@ -33,6 +45,11 @@ impl Default for Build {
             max_cstack_size: 1000000,
             use_longjmp: false,
             enable_codegen: false,
+            enable_compiler: true,
+            enable_custom: true,
+            enable_require: true,
+            enable_config: true,
+            enable_vm: true,
             vector_size: 3,
         }
     }
@@ -92,6 +109,46 @@ impl Build {
         self
     }
 
+    /// Sets whether to enable the compiler (along with the type checker, etc.).
+    ///
+    /// Default is true.
+    pub fn enable_compiler(&mut self, enable: bool) -> &mut Build {
+        self.enable_compiler = enable;
+        self
+    }
+
+    /// Sets whether to enable the config library.
+    ///
+    /// Default is true.
+    pub fn enable_config(&mut self, enable: bool) -> &mut Build {
+        self.enable_config = enable;
+        self
+    }
+
+    /// Sets whether to enable the custom library (for fflag and debug).
+    ///
+    /// Default is true.
+    pub fn enable_custom(&mut self, enable: bool) -> &mut Build {
+        self.enable_custom = enable;
+        self
+    }
+
+    /// Sets whether to enable the require library.
+    ///
+    /// Default is true.
+    pub fn enable_require(&mut self, enable: bool) -> &mut Build {
+        self.enable_require = enable;
+        self
+    }
+
+    /// Sets whether to enable the VM.
+    ///
+    /// Default is true.
+    pub fn enable_vm(&mut self, enable: bool) -> &mut Build {
+        self.enable_vm = enable;
+        self
+    }
+
     /// Sets the vector size (3 or 4).
     ///
     /// Default is 3.
@@ -102,7 +159,7 @@ impl Build {
     }
 
     /// Builds the Lua artifacts for the specified version.
-    pub fn build(&mut self) -> Artifacts {
+    pub fn build(&self) -> Artifacts {
         let target = &self.target.as_ref().expect("TARGET is not set")[..];
         let host = &self.host.as_ref().expect("HOST is not set")[..];
         let out_dir = self.out_dir.as_ref().expect("OUT_DIR is not set");
@@ -147,6 +204,34 @@ impl Build {
             }
         }
 
+        let is_wasm_unknown = target == "wasm32-unknown-unknown";
+        let wasi = if is_wasm_unknown || target.starts_with("wasm32-wasi") {
+            println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
+
+            let sysroot = env::var_os("WASI_SYSROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| panic!("WASI_SYSROOT is not set"));
+            let triple = if is_wasm_unknown {
+                "wasm32-wasip1"
+            } else {
+                target
+            };
+
+            config
+                .flag(format!("--target={}", triple))
+                .flag(format!("--sysroot={}", sysroot.display()))
+                .flag("-isystem")
+                .flag(sysroot.join("include").join(triple).join("eh/c++/v1"))
+                .flag("-fexceptions")
+                .flag("-fwasm-exceptions")
+                .flag("-mllvm")
+                .flag("-wasm-use-legacy-eh=false")
+                .define("_WASI_EMULATED_PROCESS_CLOCKS", None);
+            Some((sysroot, triple))
+        } else {
+            None
+        };
+
         if target.ends_with("emscripten") {
             // cc-rs unconditionally adds `-fno-exceptions` for wasm32.
             // We need to re-enable exceptions and switch to the
@@ -177,20 +262,26 @@ impl Build {
         let ast_lib_name = "luauast";
         let ast_source_dir = luau_source_dir.join("Ast").join("src");
         let ast_include_dir = luau_source_dir.join("Ast").join("include");
-        config
-            .clone()
-            .include(&ast_include_dir)
-            .add_files_by_ext_sorted(&ast_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(ast_lib_name);
+        if self.enable_compiler {
+            config
+                .clone()
+                .include(&ast_include_dir)
+                .add_files_by_ext_sorted(&ast_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(ast_lib_name);
+        }
 
         // Build `CodeGen` library
         let codegen_lib_name = "luaucodegen";
         let codegen_source_dir = luau_source_dir.join("CodeGen").join("src");
         let codegen_include_dir = luau_source_dir.join("CodeGen").join("include");
         if self.enable_codegen {
-            if target.ends_with("emscripten") {
-                panic!("codegen (jit) is not supported on emscripten");
+            if !self.enable_vm {
+                panic!("codegen (jit) requires the VM to be enabled");
+            }
+
+            if target.starts_with("wasm") {
+                panic!("codegen (jit) is not supported on wasm");
             }
 
             config
@@ -217,112 +308,162 @@ impl Build {
         let bytecode_lib_name = "luaubytecode";
         let bytecode_source_dir = luau_source_dir.join("Bytecode").join("src");
         let bytecode_include_dir = luau_source_dir.join("Bytecode").join("include");
-        config
-            .clone()
-            .include(&bytecode_include_dir)
-            .add_files_by_ext_sorted(&bytecode_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(bytecode_lib_name);
+        let enable_bytecode = self.enable_codegen || self.enable_compiler;
+        if enable_bytecode {
+            config
+                .clone()
+                .include(&bytecode_include_dir)
+                .add_files_by_ext_sorted(&bytecode_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(bytecode_lib_name);
+        }
 
         // Build `Inliner` library
         let inliner_lib_name = "luauinliner";
         let inliner_source_dir = luau_source_dir.join("Inliner").join("src");
         let inliner_include_dir = luau_source_dir.join("Inliner").join("include");
-        config
-            .clone()
-            .include(&inliner_include_dir)
-            .include(&bytecode_include_dir)
-            .include(&bytecode_source_dir)
-            .include(&vm_include_dir)
-            .include(&vm_source_dir)
-            .define("LUAJITINLINER_API", "extern \"C\"")
-            .add_files_by_ext_sorted(&inliner_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(inliner_lib_name);
+        if self.enable_codegen {
+            config
+                .clone()
+                .include(&inliner_include_dir)
+                .include(&bytecode_include_dir)
+                .include(&bytecode_source_dir)
+                .include(&vm_include_dir)
+                .include(&vm_source_dir)
+                .define("LUAJITINLINER_API", "extern \"C\"")
+                .add_files_by_ext_sorted(&inliner_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(inliner_lib_name);
+        }
 
         // Build `Compiler` library
         let compiler_lib_name = "luaucompiler";
         let compiler_source_dir = luau_source_dir.join("Compiler").join("src");
         let compiler_include_dir = luau_source_dir.join("Compiler").join("include");
-        config
-            .clone()
-            .include(&compiler_include_dir)
-            .include(&bytecode_include_dir)
-            .include(&ast_include_dir)
-            .define("LUACODE_API", "extern \"C\"")
-            .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(compiler_lib_name);
+        if self.enable_compiler {
+            config
+                .clone()
+                .include(&compiler_include_dir)
+                .include(&bytecode_include_dir)
+                .include(&ast_include_dir)
+                .define("LUACODE_API", "extern \"C\"")
+                .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(compiler_lib_name);
+        }
 
         // Build `Config` library
         let config_lib_name = "luauconfig";
         let config_source_dir = luau_source_dir.join("Config").join("src");
         let config_include_dir = luau_source_dir.join("Config").join("include");
-        config
-            .clone()
-            .include(&config_include_dir)
-            .include(&ast_include_dir)
-            .include(&compiler_include_dir)
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&config_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(config_lib_name);
+        if self.enable_config {
+            if !self.enable_vm {
+                panic!("config requires the VM to be enabled");
+            }
+
+            config
+                .clone()
+                .include(&config_include_dir)
+                .include(&ast_include_dir)
+                .include(&compiler_include_dir)
+                .include(&vm_include_dir)
+                .add_files_by_ext_sorted(&config_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(config_lib_name);
+        }
 
         // Build customization library
         let custom_lib_name = "luaucustom";
         let custom_source_dir = luau_source_dir.join("Custom").join("src");
-        config
-            .clone()
-            .include(&vm_include_dir)
-            .include(&vm_source_dir)
-            .add_files_by_ext_sorted(&custom_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(custom_lib_name);
+        if self.enable_custom {
+            if !self.enable_vm {
+                panic!("custom requires the VM to be enabled");
+            }
+            config
+                .clone()
+                .include(&vm_include_dir)
+                .include(&vm_source_dir)
+                .add_files_by_ext_sorted(&custom_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(custom_lib_name);
+        }
 
         // Build `Require` library
         let require_lib_name = "luaurequire";
         let require_source_dir = luau_source_dir.join("Require").join("src");
         let require_include_dir = luau_source_dir.join("Require").join("include");
-        config
-            .clone()
-            .include(&require_include_dir)
-            .include(&ast_include_dir)
-            .include(&config_include_dir)
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&require_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(require_lib_name);
+        if self.enable_require {
+            if !self.enable_vm {
+                panic!("require requires the VM to be enabled");
+            }
+            config
+                .clone()
+                .include(&require_include_dir)
+                .include(&ast_include_dir)
+                .include(&config_include_dir)
+                .include(&vm_include_dir)
+                .add_files_by_ext_sorted(&require_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(require_lib_name);
+        }
 
         // Build VM
         let vm_lib_name = "luauvm";
-        config
-            .clone()
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&vm_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(vm_lib_name);
-
-        let mut artifacts = Artifacts {
-            lib_dir: build_dir,
-            libs: vec![
-                inliner_lib_name.to_string(),
-                vm_lib_name.to_string(),
-                bytecode_lib_name.to_string(),
-                compiler_lib_name.to_string(),
-                ast_lib_name.to_string(),
-                common_lib_name.to_string(),
-                config_lib_name.to_string(),
-                custom_lib_name.to_string(),
-                require_lib_name.to_string(),
-            ],
-            cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
-        };
-
-        if self.enable_codegen {
-            artifacts.libs.push(codegen_lib_name.to_string());
+        if self.enable_vm {
+            config
+                .clone()
+                .include(&vm_include_dir)
+                .add_files_by_ext_sorted(&vm_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(vm_lib_name);
         }
 
-        artifacts
+        let libs = [
+            (ast_lib_name, self.enable_compiler),
+            (bytecode_lib_name, enable_bytecode),
+            (codegen_lib_name, self.enable_codegen),
+            (common_lib_name, true),
+            (compiler_lib_name, self.enable_compiler),
+            (config_lib_name, self.enable_config),
+            (custom_lib_name, self.enable_custom),
+            (inliner_lib_name, self.enable_codegen),
+            (require_lib_name, self.enable_require),
+            (vm_lib_name, self.enable_vm),
+        ]
+        .into_iter()
+        .filter_map(|(lib, enabled)| if enabled { Some(lib.to_string()) } else { None })
+        .collect::<Vec<_>>();
+
+        let cpp_stdlib = match wasi {
+            Some { .. } => None,
+            None => Self::get_cpp_link_stdlib(target, host),
+        };
+        let (extra_lib_dirs, extra_libs) = if let Some((sysroot, triple)) = wasi {
+            let lib_dir = sysroot.join("lib").join(triple);
+            let extra_lib_dirs = vec![lib_dir.join("eh"), lib_dir];
+            let extra_libs = [
+                ("c", is_wasm_unknown),
+                ("c++", true),
+                ("c++abi", true),
+                ("unwind", true),
+                ("wasi-emulated-process-clocks", true),
+            ]
+            .into_iter()
+            .filter_map(|(lib, enabled)| if enabled { Some(lib.to_string()) } else { None })
+            .collect::<Vec<_>>();
+
+            (extra_lib_dirs, extra_libs)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        Artifacts {
+            lib_dir: build_dir,
+            libs,
+            cpp_stdlib,
+            extra_lib_dirs,
+            extra_libs,
+        }
     }
 
     /// Returns the C++ standard library:
@@ -369,7 +510,10 @@ impl Artifacts {
 
     pub fn print_cargo_metadata(&self) {
         println!("cargo:rustc-link-search=native={}", self.lib_dir.display());
-        for lib in &self.libs {
+        for dir in &self.extra_lib_dirs {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+        }
+        for lib in self.libs.iter().chain(&self.extra_libs) {
             println!("cargo:rustc-link-lib=static={lib}");
         }
         if let Some(ref cpp_stdlib) = self.cpp_stdlib {

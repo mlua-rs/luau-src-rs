@@ -63,7 +63,7 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-#[cfg(not(target_os = "emscripten"))]
+#[cfg(not(target_family = "wasm"))]
 unsafe extern "C" {
     pub fn luau_codegen_supported() -> c_int;
     pub fn luau_codegen_create(state: *mut c_void);
@@ -95,7 +95,7 @@ mod tests {
             assert!(!state.is_null());
 
             // Enable JIT if supported
-            #[cfg(not(target_os = "emscripten"))]
+            #[cfg(not(target_family = "wasm"))]
             if luau_codegen_supported() != 0 {
                 luau_codegen_create(state);
             }
@@ -120,7 +120,7 @@ mod tests {
             free(bytecode.cast());
 
             // Compile the function (JIT, if supported)
-            #[cfg(not(target_os = "emscripten"))]
+            #[cfg(not(target_family = "wasm"))]
             if luau_codegen_supported() != 0 {
                 luau_codegen_compile(state, -1);
             }
